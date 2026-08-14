@@ -2,9 +2,9 @@
 
 **OpenMacro XTernal 기반의 Roblox Fisch 외부 메모리 매크로 포크**
 
-버전: `v1.0.0 (beta)` · 기반: OpenMacro XTernal `v0.2.55`
+기반: OpenMacro XTernal `v0.2.55`
 
-편집: 히카리 (@hanano_hikari)
+편집: 히카리 (@1004hikari)
 
 ---
 
