@@ -4,7 +4,7 @@
 
 기반: OpenMacro XTernal `v0.2.55`
 
-편집: 히카리 (@1004hikari)
+편집: 히카리 (Discord : @1004hikari)
 
 ---
 
