@@ -1,0 +1,30 @@
+OpenMacro XTernal
+Copyright (c) 2026 (@anorexc).
+
+This product includes software developed by the OpenMacro XTernal project.
+
+Licensed under the GNU Affero General Public License, version 3.0 only
+(AGPL-3.0-only). See the LICENSE file in the project root for the full terms,
+or https://www.gnu.org/licenses/agpl-3.0.txt.
+
+ATTRIBUTION REQUIREMENT
+-----------------------
+Any redistribution, deployment, or derivative work — in source or object form,
+and including use over a network (AGPL-3.0 section 13) — MUST:
+  - retain this NOTICE file and reproduce its contents in accompanying
+    documentation and/or a user-visible "About"/"Credits" location;
+  - retain all copyright, license, and authorship notices present in the
+    source files; and
+  - make the complete Corresponding Source of the deployed/derived version
+    available under AGPL-3.0.
+
+The absence of a LICENSE or NOTICE file alongside this code does NOT waive any
+rights and does NOT place the code in the public domain; it indicates the
+notices were removed in violation of the license.
+
+THIRD-PARTY COMPONENTS
+----------------------
+The contents of the library/ directory are third-party works and are the
+property of their respective authors, licensed under their own terms. The
+copyright and license notices above apply ONLY to the original OpenMacro
+XTernal source (Main.ahk, shared/, ui/) and NOT to those third-party files.
