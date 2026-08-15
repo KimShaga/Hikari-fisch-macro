@@ -6,6 +6,8 @@
 
 편집: 히카리 (Discord : @1004hikari)
 
+[디스코드 서버](https://discord.com/invite/KzgDYMAVxw) 가입해서 피드백 남기기
+
 ---
 
 ## 이 프로젝트는?
