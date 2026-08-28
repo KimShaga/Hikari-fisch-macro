@@ -1871,8 +1871,8 @@ SendAppraiseFinishedWebhook(success, message) {
 }
 
 SetAppraiseStatus(message) {
-    global AppraiseStatusText
-
+    global AppraiseStatusText, g_HostAppraiseStatus
+    g_HostAppraiseStatus := "상태: " message
     if (IsSet(AppraiseStatusText) && AppraiseStatusText)
-        AppraiseStatusText.Value := "상태: " message
+        AppraiseStatusText.Value := g_HostAppraiseStatus
 }

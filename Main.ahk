@@ -36,6 +36,7 @@
 #Include shared\Memory.ahk
 #Include shared\Totem.ahk
 #Include shared\Hunt.ahk
+#Include shared\HumpbackSpawn.ahk
 #Include shared\HikariChangelog.ahk
 #Include shared\Appraise.ahk
 #Include shared\TreasureAppraise.ahk
@@ -52,6 +53,8 @@
 
 global Macro := CreateFishingMacro()
 global Controller := FishingController()
+; AHK GUI 기본. Python 호스트 백업본은 backups\python-host-era-*.zip
+global g_HostHeadless := false
 
 StartApp()
 
@@ -142,6 +145,7 @@ RodWatcher() {
 ; which keys off the PlaceId offset since the DataModel exists even on the menu).
 RobloxAttachWatcher() {
     global Macro, ROD, _AttachWatcherBusy, _HotbarInitAt, g_BuildUnsupported
+    global g_LatestSupportedOffsetsVersion
     global _ConnectingSince, ATTACH_CONNECTING_TIMEOUT_MS, g_GuiSizing
 
     if (_AttachWatcherBusy)
@@ -206,6 +210,7 @@ RobloxAttachWatcher() {
     try {
         AttachToRoblox()
         g_BuildUnsupported := false
+        g_LatestSupportedOffsetsVersion := ""
         UpdateRobloxUiState()
     } catch {
         ; Normal while Roblox is on the menu/tray -- try again next tick.

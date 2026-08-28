@@ -544,11 +544,12 @@ HasAnyTreasureGoalEnabled() {
 }
 
 SetTreasureAppraiseStatus(text) {
-    global TreasureStatusText, AppraiseStatusText
+    global TreasureStatusText, AppraiseStatusText, g_HostTreasureStatus
+    g_HostTreasureStatus := "상태: " text
     if IsSet(TreasureStatusText) && TreasureStatusText
-        TreasureStatusText.Value := "상태: " text
+        TreasureStatusText.Value := g_HostTreasureStatus
     else if IsSet(AppraiseStatusText) && AppraiseStatusText
-        AppraiseStatusText.Value := "상태: " text
+        AppraiseStatusText.Value := g_HostTreasureStatus
 }
 
 FindEventAppraiseRoot() {

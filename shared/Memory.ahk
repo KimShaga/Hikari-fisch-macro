@@ -386,7 +386,7 @@ CanForceAttachReset() {
 ; Wipe handles/caches and attach again (same as F3, without a dialog).
 ReinitializeRobloxConnection() {
     global _AttachWatcherBusy, _ConnectingSince, _HotbarInitAt, _LastAttachResetAt
-    global g_BuildUnsupported
+    global g_BuildUnsupported, g_LatestSupportedOffsetsVersion
 
     if (_AttachWatcherBusy)
         return false
@@ -408,6 +408,7 @@ ReinitializeRobloxConnection() {
 
         AttachToRoblox(pid)
         g_BuildUnsupported := false
+        g_LatestSupportedOffsetsVersion := ""
         UpdateRobloxUiState()
         return true
     } catch {
@@ -860,7 +861,7 @@ GetHotbarRodDisplayText() {
         if (toolText = "")
             continue
 
-        if (ExtractPureRodName(toolText) != "" || IsBellonaRodText(toolText) || IsPinionRodText(toolText) || IsTranquilityRodText(toolText) || IsLullabyRodText(toolText) || IsRequiemRodText(toolText) || IsNoiseformRodText(toolText))
+        if (ExtractPureRodName(toolText) != "" || IsBellonaRodText(toolText) || IsPinionRodText(toolText) || IsTranquilityRodText(toolText) || IsLullabyRodText(toolText) || IsRequiemRodText(toolText) || IsNoiseformRodText(toolText) || IsStellarwaveRodText(toolText) || IsHalibutHarpoonRodText(toolText))
             return toolText
 
         if (fallback = "")
@@ -872,6 +873,9 @@ GetHotbarRodDisplayText() {
 
 GetKnownRodNames() {
     static rodNames := [
+        "Starforged Spirit Halibut Harpoon",
+        "Halibut Harpoon",
+        "Stellarwave Melody",
         "Noiseform",
         "Bellona's Waraxe",
         "Pinion's Aria",
@@ -923,6 +927,27 @@ IsNoiseformRodText(text) {
 
 HasNoiseformHotbarRod() {
     return IsNoiseformRodText(GetHotbarRodDisplayText())
+}
+
+; Stellarwave Melody — reel signbar / signContainer zodiac click gimmick
+IsStellarwaveRodText(text) {
+    n := StrLower(NormalizeRodDisplayText(text))
+    return (InStr(n, "stellarwave") || InStr(n, "stellar wave") || InStr(n, "stellawave")) ? true : false
+}
+
+HasStellarwaveHotbarRod() {
+    return IsStellarwaveRodText(GetHotbarRodDisplayText())
+}
+
+; Starforged Spirit Halibut Harpoon — random ! warning; bar must cover fish+warn together
+IsHalibutHarpoonRodText(text) {
+    n := StrLower(NormalizeRodDisplayText(text))
+    ; Prefer "halibut" so normal Harpoon gun mode is not confused with this rod.
+    return InStr(n, "halibut") ? true : false
+}
+
+HasHalibutHarpoonHotbarRod() {
+    return IsHalibutHarpoonRodText(GetHotbarRodDisplayText())
 }
 
 IsPinionRodText(text) {

@@ -68,10 +68,37 @@ GetHuntCategoryLabels() {
 }
 
 GetHuntCategoryIdByLabel(label) {
+    label := Trim(label)
+    if (label = "")
+        return ""
     for def in GetHuntCategoryDefs() {
         if (def["label"] = label)
             return def["id"]
     }
+    return ""
+}
+
+; DDL Change 직후 Value/Text가 어긋날 수 있음 → Text 일치 우선, 그다음 CB_GETCURSEL
+ResolveHuntCategoryIdFromDdl(ddl) {
+    if !(ddl)
+        return "shark"
+    byLabel := GetHuntCategoryIdByLabel(ddl.Text)
+    if (byLabel != "")
+        return byLabel
+    try {
+        ; CB_GETCURSEL — 0-based, CB_ERR(-1)이면 선택 없음
+        sel := SendMessage(0x0147, 0, 0, ddl)
+        if (sel >= 0)
+            return GetHuntCategoryIdByIndex(Integer(sel) + 1)
+    } catch {
+    }
+    return GetHuntCategoryIdByIndex(ddl.Value)
+}
+
+GetHuntCategoryIdByIndex(idx) {
+    defs := GetHuntCategoryDefs()
+    if (idx >= 1 && idx <= defs.Length)
+        return defs[idx]["id"]
     return "shark"
 }
 
@@ -2185,13 +2212,13 @@ HuntDetectWatcher() {
 }
 
 UpdateHuntStatusUi(activeKeys := unset) {
-    global HuntStatusText, g_LastHuntStatusUiText
-
-    if (!IsSet(HuntStatusText) || !HuntStatusText)
-        return
+    global HuntStatusText, g_LastHuntStatusUiText, g_HostHuntsText
 
     try {
         text := FormatActiveHuntsDisplay(IsSet(activeKeys) ? activeKeys : GetActiveHuntKeys(false, false, false))
+        g_HostHuntsText := text
+        if (!IsSet(HuntStatusText) || !HuntStatusText)
+            return
         if (text = g_LastHuntStatusUiText)
             return
         g_LastHuntStatusUiText := text
@@ -3136,4 +3163,446 @@ DumpGuiInstanceTree(rootAddr, label, lines, depth, maxDepth, maxNodes) {
     } catch {
     }
     return walked
+}
+
+; StellaWave Melody: ImageId + AbsolutePosition 포함 트리 (Noiseform 때처럼 기믹 구조 파악용)
+DumpGuiInstanceTreeRich(rootAddr, lines, depth, maxDepth, maxNodes) {
+    if (!rootAddr || depth > maxDepth || lines.Length > maxNodes + 80)
+        return 0
+
+    indent := ""
+    Loop depth
+        indent .= "  "
+
+    name := ""
+    className := ""
+    try name := ReadInstanceName(rootAddr)
+    try className := ReadClassName(rootAddr)
+
+    extra := ""
+    try {
+        rect := ReadAbsoluteRect(rootAddr)
+        if (IsObject(rect))
+            extra .= " " Round(rect.w) "x" Round(rect.h) " @(" Round(rect.x) "," Round(rect.y) ")"
+    } catch {
+    }
+    try {
+        vis := ReadGuiObjectVisible(rootAddr) ? "vis" : "hid"
+        extra .= " " vis
+    } catch {
+    }
+    if (className = "TextLabel" || className = "TextButton" || className = "TextBox") {
+        try {
+            t := ReadHuntGuiText(rootAddr)
+            if (t != "") {
+                t := RegExReplace(t, "[\r\n\t]+", " ")
+                if (StrLen(t) > 120)
+                    t := SubStr(t, 1, 120) "…"
+                extra .= " text=`"" t "`""
+            }
+        } catch {
+        }
+    }
+    if (InStr(className, "Image") || className = "ImageButton" || className = "ImageLabel") {
+        try {
+            img := ReadGuiImage(rootAddr)
+            if (img != "") {
+                if (StrLen(img) > 100)
+                    img := SubStr(img, 1, 100) "…"
+                extra .= " img=" img
+            }
+        } catch {
+        }
+    }
+
+    lines.Push(indent "[" className "] " (name != "" ? name : "?") extra)
+
+    walked := 1
+    if (depth >= maxDepth)
+        return walked
+
+    try {
+        for childAddr in ReadChildren(rootAddr) {
+            if (lines.Length > maxNodes + 80)
+                break
+            walked += DumpGuiInstanceTreeRich(childAddr, lines, depth + 1, maxDepth, maxNodes)
+        }
+    } catch {
+    }
+    return walked
+}
+
+IsStellaWaveDumpNameHit(name) {
+    n := StrLower(Trim(name))
+    if (n = "")
+        return false
+    needles := ["stella", "stellawave", "starwave", "melody", "zodiac", "constellation"
+        , "horoscope", "aries", "taurus", "gemini", "cancer", "leo", "virgo"
+        , "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"
+        , "sign", "astro", "constel", "wavegame", "notebar", "musicbar"]
+    for needle in needles {
+        if InStr(n, needle)
+            return true
+    }
+    return false
+}
+
+DumpStellaWaveMelodyDebug(*) {
+    global APPDATA_DIR, ROD
+
+    path := APPDATA_DIR "\stellawave-melody-dump.txt"
+    lines := []
+    lines.Push("=== StellaWave Melody dump " A_Now " ===")
+    lines.Push("기믹(위 고정 문양 + 아래 스크롤 문양)이 화면에 있는 동안 덤프하세요.")
+    lines.Push("")
+
+    if (!IsMemoryReady() || !IsInFischGame()) {
+        lines.Push("Roblox/Fisch 미연결")
+        _WriteHuntDumpFile(path, lines)
+        try Run('notepad.exe "' path '"')
+        try TrayTip("StellaWave 덤프 실패: 미연결", "개발자 옵션", "Mute")
+        return
+    }
+
+    playerGui := FindPlayerGui()
+    if (!playerGui) {
+        lines.Push("PlayerGui 없음")
+        _WriteHuntDumpFile(path, lines)
+        try Run('notepad.exe "' path '"')
+        return
+    }
+
+    try lines.Push("ROD=" (IsSet(ROD) ? ROD : "?"))
+    catch {
+    }
+    lines.Push("")
+
+    topChildren := []
+    try {
+        for childPtr in ReadChildren(playerGui)
+            topChildren.Push(childPtr)
+    } catch as err {
+        lines.Push("PlayerGui children error: " err.Message)
+    }
+
+    lines.Push("========== PlayerGui top-level ==========")
+    nameHits := []
+    openHits := []
+    for childPtr in topChildren {
+        try {
+            summary := FormatGuiDumpRootSummary(childPtr)
+            nm := ReadInstanceName(childPtr)
+            cls := ReadClassName(childPtr)
+            mark := ""
+            if IsStellaWaveDumpNameHit(nm)
+                mark .= " <<STELLA?>>"
+            if (cls = "ScreenGui" && IsScreenGuiEnabledFlag(childPtr) && HasLikelyOpenGuiContent(childPtr)) {
+                mark .= " <<OPEN?>>"
+                openHits.Push(childPtr)
+            }
+            if (mark != "" || IsStellaWaveDumpNameHit(nm))
+                nameHits.Push(childPtr)
+            lines.Push("  " summary mark)
+        } catch {
+        }
+    }
+    lines.Push("")
+
+    ; reel 은 Noiseform/일반 낚시와 겹칠 수 있어 항상 깊게
+    try {
+        reelGui := GetReelGui()
+        if (reelGui) {
+            lines.Push("========== reel ScreenGui (rich) ==========")
+            lines.Push("--- " FormatGuiDumpRootSummary(reelGui) " ---")
+            DumpGuiInstanceTreeRich(reelGui, lines, 0, 14, 6000)
+            lines.Push("")
+        } else {
+            lines.Push("reel ScreenGui: 없음")
+            lines.Push("")
+        }
+    } catch as err {
+        lines.Push("reel dump error: " err.Message)
+        lines.Push("")
+    }
+
+    seen := Map()
+    dumpList := []
+    for addr in nameHits {
+        if !seen.Has(addr) {
+            seen[addr] := true
+            dumpList.Push(addr)
+        }
+    }
+    for addr in openHits {
+        if !seen.Has(addr) {
+            seen[addr] := true
+            dumpList.Push(addr)
+        }
+    }
+
+    lines.Push("========== name/OPEN hits (rich tree) ==========")
+    if (!dumpList.Length) {
+        lines.Push("(이름/OPEN 후보 없음 — 그래도 열린 ScreenGui를 전부 얕게 덤프)")
+        for childPtr in topChildren {
+            try {
+                if (ReadClassName(childPtr) != "ScreenGui")
+                    continue
+                if !IsScreenGuiEnabledFlag(childPtr)
+                    continue
+                lines.Push("--- " FormatGuiDumpRootSummary(childPtr) " ---")
+                DumpGuiInstanceTreeRich(childPtr, lines, 0, 8, 2500)
+                lines.Push("")
+            } catch {
+            }
+        }
+    } else {
+        for addr in dumpList {
+            try {
+                lines.Push("--- " FormatGuiDumpRootSummary(addr) " ---")
+                DumpGuiInstanceTreeRich(addr, lines, 0, 14, 5000)
+                lines.Push("")
+            } catch {
+            }
+        }
+    }
+
+    ; 텍스트 힌트 스캔
+    lines.Push("========== text/image keyword scan (open roots) ==========")
+    scanRoots := dumpList.Length ? dumpList : openHits
+    if (!scanRoots.Length) {
+        for childPtr in topChildren {
+            try {
+                if (ReadClassName(childPtr) = "ScreenGui" && IsScreenGuiEnabledFlag(childPtr))
+                    scanRoots.Push(childPtr)
+            } catch {
+            }
+        }
+    }
+    hitCount := 0
+    for root in scanRoots {
+        stack := [root]
+        visited := 0
+        while (stack.Length > 0 && visited < 4000 && hitCount < 200) {
+            addr := stack.Pop()
+            visited += 1
+            try {
+                for c in ReadChildren(addr)
+                    stack.Push(c)
+            } catch {
+            }
+            try {
+                nm := ReadInstanceName(addr)
+                cls := ReadClassName(addr)
+                blob := StrLower(nm)
+                t := ""
+                if (cls = "TextLabel" || cls = "TextButton" || cls = "TextBox") {
+                    try t := ReadHuntGuiText(addr)
+                    catch {
+                    }
+                    blob .= " " StrLower(t)
+                }
+                img := ""
+                if (InStr(cls, "Image")) {
+                    try img := ReadGuiImage(addr)
+                    catch {
+                    }
+                    blob .= " " StrLower(img)
+                }
+                if !(InStr(blob, "click") || InStr(blob, "hold") || InStr(blob, "melody")
+                    || InStr(blob, "stella") || InStr(blob, "zodiac") || InStr(blob, "aries")
+                    || InStr(blob, "sign") || IsStellaWaveDumpNameHit(nm))
+                    continue
+                lines.Push("  " FormatGuiDumpRootSummary(addr) (t != "" ? " text=`"" t "`"" : "") (img != "" ? " img=" img : ""))
+                hitCount += 1
+            } catch {
+            }
+        }
+    }
+    if (!hitCount)
+        lines.Push("(키워드 히트 없음)")
+
+    ; 파싱된 top/bottom ImageId — 매핑 검증용
+    lines.Push("")
+    lines.Push("========== Stellarwave parsed signs ==========")
+    try {
+        reelGui := GetReelGui()
+        signbar := GetStellarwaveSignbar(reelGui)
+        container := GetStellarwaveSignContainer()
+        lines.Push("signbar=" (signbar ? Format("0x{:X}", signbar) : "0")
+            " vis=" (signbar && ReadGuiObjectVisible(signbar) ? "1" : "0"))
+        lines.Push("signContainer=" (container ? Format("0x{:X}", container) : "0")
+            " vis=" (container && ReadGuiObjectVisible(container) ? "1" : "0"))
+        tops := CollectStellarwaveTopSigns(signbar)
+        lines.Push("--- top L→R (signbar/star/sign) ---")
+        for i, t in tops
+            lines.Push(Format("  T{:02d} img={} x={} filled={}", i, t.img, Round(t.x), t.filled ? 1 : 0))
+        lines.Push("filledPrefix=" CountStellarwaveFilledStars(tops))
+        lines.Push("--- bottom remaining TextButtons (baseSign) ---")
+        bottoms := CollectStellarwaveBottomButtons(container)
+        for img, btn in bottoms {
+            nm := ""
+            try nm := ReadInstanceName(btn)
+            catch {
+            }
+            lines.Push(Format("  {} img={}", nm != "" ? nm : "?", img))
+        }
+        lines.Push("--- map lookup (next unfilled only) ---")
+        pairMap := GetStellarwaveTopToBottomMap()
+        filled := CountStellarwaveFilledStars(tops)
+        for i, t in tops {
+            want := pairMap.Has(t.img) ? pairMap[t.img] : "?"
+            hit := (want != "?" && bottoms.Has(want)) ? "OK" : (t.filled ? "done" : "MISS")
+            mark := (i = filled + 1) ? " <<NEXT>>" : ""
+            lines.Push(Format("  T{:02d} {} → {} [{}]{}", i, t.img, want, hit, mark))
+        }
+    } catch as err {
+        lines.Push("parsed signs error: " err.Message)
+    }
+
+    _WriteHuntDumpFile(path, lines)
+    try A_Clipboard := path
+    try Run('notepad.exe "' path '"')
+    try TrayTip("StellaWave 덤프 저장됨`n" path, "개발자 옵션", "Mute")
+}
+
+IsHalibutDumpNameHit(name) {
+    n := StrLower(Trim(name))
+    if (n = "")
+        return false
+    if IsHalibutWarningName(name)
+        return true
+    needles := ["halibut", "harpoon", "spirit", "warning", "warn", "alert"
+        , "exclaim", "bang", "danger", "mark", "caution", "shock", "ping"]
+    for needle in needles {
+        if InStr(n, needle)
+            return true
+    }
+    return false
+}
+
+DumpHalibutHarpoonDebug(*) {
+    global APPDATA_DIR, ROD
+
+    path := APPDATA_DIR "\halibut-harpoon-dump.txt"
+    lines := []
+    lines.Push("=== Halibut Harpoon dump " A_Now " ===")
+    lines.Push("느낌표(!) 경고가 릴 바에 떠 있는 동안 덤프하세요.")
+    lines.Push("")
+
+    if (!IsMemoryReady() || !IsInFischGame()) {
+        lines.Push("Roblox/Fisch 미연결")
+        _WriteHuntDumpFile(path, lines)
+        try Run('notepad.exe "' path '"')
+        try TrayTip("Halibut 덤프 실패: 미연결", "개발자 옵션", "Mute")
+        return
+    }
+
+    try lines.Push("ROD=" (IsSet(ROD) ? ROD : "?"))
+    catch {
+    }
+    lines.Push("IsHalibutRod=" (IsHalibutHarpoonRodText(IsSet(ROD) ? ROD : "") ? 1 : 0))
+    lines.Push("")
+
+    reelGui := 0
+    try reelGui := GetReelGui()
+    catch {
+    }
+    if (!reelGui) {
+        lines.Push("reel ScreenGui: 없음")
+        _WriteHuntDumpFile(path, lines)
+        try Run('notepad.exe "' path '"')
+        return
+    }
+
+    lines.Push("========== reel ScreenGui (rich) ==========")
+    lines.Push("--- " FormatGuiDumpRootSummary(reelGui) " ---")
+    DumpGuiInstanceTreeRich(reelGui, lines, 0, 12, 4000)
+    lines.Push("")
+
+    ctx := GetReelBarContext()
+    barAddr := (ctx && ctx.bar) ? ctx.bar : 0
+    lines.Push("========== Halibut warning probe ==========")
+    lines.Push("bar=" (barAddr ? Format("0x{:X}", barAddr) : "0"))
+    warnX := ""
+    try warnX := GetHalibutWarningCenter(barAddr)
+    catch as err {
+        lines.Push("GetHalibutWarningCenter error: " err.Message)
+    }
+    lines.Push("warnCenterX=" (warnX = "" ? "(none)" : warnX))
+    if (ctx && ctx.fish) {
+        try {
+            fishPos := ReadFramePosition(ctx.fish)
+            fishSize := ReadFrameSize(ctx.fish)
+            lines.Push(Format("fishCenterX={1:.4f}", fishPos.X + fishSize.X / 2))
+        } catch {
+        }
+    }
+    if (ctx && ctx.playerbar) {
+        try {
+            pbPos := ReadFramePosition(ctx.playerbar)
+            pbSize := ReadFrameSize(ctx.playerbar)
+            lines.Push(Format("playerbar L={1:.4f} W={2:.4f}", pbPos.X, pbSize.X))
+        } catch {
+        }
+    }
+    lines.Push("")
+    lines.Push("--- bar/reel children scored as warning candidates ---")
+    searchRoots := []
+    if (barAddr)
+        searchRoots.Push(barAddr)
+    try {
+        parent := ReadParent(barAddr)
+        if (parent)
+            searchRoots.Push(parent)
+    } catch {
+    }
+    for rootAddr in searchRoots {
+        rootName := ""
+        try rootName := ReadInstanceName(rootAddr)
+        catch {
+        }
+        lines.Push("root=" rootName)
+        try {
+            for childPtr in ReadChildren(rootAddr) {
+                name := ReadInstanceName(childPtr)
+                cls := ReadClassName(childPtr)
+                if (IsHalibutIgnoredReelChild(name))
+                    continue
+                vis := "?"
+                try vis := ReadGuiObjectVisible(childPtr) ? "vis" : "hid"
+                catch {
+                }
+                score := 0
+                if (IsHalibutWarningName(name))
+                    score += 100
+                if (InStr(name, "!") || InStr(StrLower(name), "excl"))
+                    score += 80
+                img := ""
+                if (InStr(cls, "Image")) {
+                    try img := ReadGuiImage(childPtr)
+                    catch {
+                    }
+                }
+                rectExtra := ""
+                try {
+                    rect := ReadAbsoluteRect(childPtr)
+                    if (IsObject(rect))
+                        rectExtra := Format(" {}x{} @({},{})", Round(rect.w), Round(rect.h), Round(rect.x), Round(rect.y))
+                } catch {
+                }
+                mark := score >= 50 ? " <<CAND>>" : ""
+                if (score >= 50 || IsHalibutDumpNameHit(name) || vis = "vis")
+                    lines.Push(Format("  [{}] {} score={} {}{}{}{}"
+                        , cls, name, score, vis, rectExtra
+                        , (img != "" ? " img=" img : ""), mark))
+            }
+        } catch as err {
+            lines.Push("  children error: " err.Message)
+        }
+    }
+
+    _WriteHuntDumpFile(path, lines)
+    try A_Clipboard := path
+    try Run('notepad.exe "' path '"')
+    try TrayTip("Halibut 덤프 저장됨`n" path, "개발자 옵션", "Mute")
 }

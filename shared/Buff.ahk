@@ -527,11 +527,12 @@ FormatActiveBuffsDisplay(state := unset) {
 }
 
 UpdateBuffStatusUi(forceScan := false) {
-    global BuffStatusText, g_LastBuffStatusUiText
-    if (!IsSet(BuffStatusText) || !BuffStatusText)
-        return
+    global BuffStatusText, g_LastBuffStatusUiText, g_HostBuffsText
     try {
         text := FormatActiveBuffsDisplay(ScanActiveBuffState(forceScan))
+        g_HostBuffsText := text
+        if (!IsSet(BuffStatusText) || !BuffStatusText)
+            return
         if (text = g_LastBuffStatusUiText)
             return
         g_LastBuffStatusUiText := text

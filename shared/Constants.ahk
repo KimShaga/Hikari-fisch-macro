@@ -80,11 +80,16 @@ _LastAttachResetAt           := 0
 ; True while the main window is being dragged/resized (WM_ENTERSIZEMOVE). Timers
 ; skip work so the window can track the cursor instead of rubber-banding.
 g_GuiSizing                  := false
+g_GuiInSizeMove              := false
 ; Set by CheckRobloxVersionMismatch when the API has no offsets published for the
 ; running build (HTTP 404) -- usually a beta Roblox release. Drives the attach status
 ; text (plus a one-time tray tip) instead of a blocking popup; clears on its own when
 ; offsets for the build get published, or the moment an attach succeeds.
 g_BuildUnsupported         := false
+; Latest offsets version_hash the macro/API currently ships (shown when unsupported).
+g_LatestSupportedOffsetsVersion := ""
+; Last selected hunt watch category id (survives tab rebuild).
+g_HuntCategoryId           := "shark"
 ; Why the last attach attempt REALLY failed ("" = no real failure): "offsets" = the
 ; fetched offsets don't read on the running build (published-but-broken, or a build
 ; we can't identify), "api" = the offsets API was unreachable. Set by
@@ -156,6 +161,8 @@ ApplyFixedAppearance() {
 
     if (!USERPREFS.Has("dark_mode"))
         USERPREFS["dark_mode"] := 1
+    if (!USERPREFS.Has("minimize_on_macro"))
+        USERPREFS["minimize_on_macro"] := 1
 
     dark := USERPREFS["dark_mode"] + 0
     if (dark) {
@@ -363,7 +370,8 @@ GetDefaultSettings() {
         "hunt_detect_notify", 1,
         "hunt_detect_webhook", 1,
         "hunt_detect_toggles", Map(),
-        "window_use_enabled", 0
+        "window_use_enabled", 0,
+        "harpoon_use_enabled", 0
     )
 
     ; NOT part of `main` on purpose: configs are dumps of `main` and get shared,
@@ -390,6 +398,7 @@ GetDefaultSettings() {
         "auto_appraise_click_x", "",
         "auto_appraise_click_y", "",
         "dark_mode", 1,
+        "minimize_on_macro", 1,
         "reel_debug_enabled", 0,
         "reel_debug_log", 0,
         "lullaby_fishing", 0
@@ -541,6 +550,16 @@ NormalizeMainSettings(mainSettings) {
         normalizedWindow := mainSettings["window_use_enabled"] ? 1 : 0
         if (normalizedWindow != mainSettings["window_use_enabled"]) {
             mainSettings["window_use_enabled"] := normalizedWindow
+            changed := true
+        }
+    }
+    if (!mainSettings.Has("harpoon_use_enabled")) {
+        mainSettings["harpoon_use_enabled"] := 0
+        changed := true
+    } else {
+        normalizedHarpoon := mainSettings["harpoon_use_enabled"] ? 1 : 0
+        if (normalizedHarpoon != mainSettings["harpoon_use_enabled"]) {
+            mainSettings["harpoon_use_enabled"] := normalizedHarpoon
             changed := true
         }
     }

@@ -167,9 +167,10 @@ KeeperboundChargeReached(p) {
 }
 
 SetEnchantStatus(message) {
-    global EnchantStatusText
+    global EnchantStatusText, g_HostEnchantStatus
+    g_HostEnchantStatus := "상태: " message
     if (IsSet(EnchantStatusText) && EnchantStatusText)
-        EnchantStatusText.Value := "상태: " message
+        EnchantStatusText.Value := g_HostEnchantStatus
 }
 
 ; Dump path: backpack/hotbar/.../powerbar/bar/{fill, powerLabel="100% Power"}

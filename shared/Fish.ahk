@@ -83,6 +83,13 @@ CreateFishingMacro() {
         activeTotemName: "",
         totemNeedsRodReequip: false,
         totemNeedsSettleDelay: false,
+        humpbackSpawnState: "IDLE",
+        humpbackSpawnNext: "Clearcast Totem",
+        humpbackSpawnWaitUntil: 0,
+        humpbackSpawnUsedAt: 0,
+        humpbackSpawnAttempt: 0,
+        humpbackSpawnHadBanner: false,
+        humpbackSpawnHadPool: false,
         reelGuiAddr: 0,
         reelBarAddr: 0,
         fishAddr: 0,
@@ -201,6 +208,10 @@ MacroLoop() {
     if (IsSet(g_GuiSizing) && g_GuiSizing)
         return
 
+    ; Orphan L/R clicker: toggle off or left WINDOW phase while timer still alive.
+    if (IsWindowUseClickerRunning() && (Macro.phase != "WINDOW" || !Macro.cycleEnabled || !IsWindowUseEnabled()))
+        StopWindowUseClicker()
+
     ; Idle: do not rewrite GUI controls ~50×/sec. Attach watcher already refreshes rod/climate.
     if (Macro.phase = "OFF" && !Macro.cycleEnabled)
         return
@@ -211,14 +222,54 @@ MacroLoop() {
             StopWindowUseMacro()
             return
         }
-        if !IsWindowUseClickerRunning()
-            StartWindowUseClicker()
-        UpdateMacroStatus("창 사용", "---", "---")
+        ; stab GUI → wait until bar size pops (minigame start), then fast L/R spam.
+        static windowUseWasActive := false
+        static windowUseWasReady := false
+        static windowUseLostAt := 0
+        active := IsWindowUseGuiVisible()
+        ready := active ? IsStabMinigameStarted() : false
+        if (active) {
+            windowUseLostAt := 0
+            if (ready) {
+                if !IsWindowUseClickerRunning() {
+                    StartWindowUseClicker()
+                }
+                UpdateMacroStatus("창 사용", "연타", "---")
+            } else {
+                if IsWindowUseClickerRunning()
+                    StopWindowUseClicker()
+                UpdateMacroStatus("창 사용", "시작대기", "---")
+            }
+        } else {
+            ResetStabMinigameStartWatch()
+            if (!windowUseLostAt)
+                windowUseLostAt := A_TickCount
+            if (IsWindowUseClickerRunning() && (A_TickCount - windowUseLostAt) >= 250)
+                StopWindowUseClicker()
+            UpdateMacroStatus("창 사용", "대기", "---")
+        }
+        if (active != windowUseWasActive || ready != windowUseWasReady) {
+            windowUseWasActive := active
+            windowUseWasReady := ready
+            try UpdateWindowHarpoonStatusUi()
+            catch {
+            }
+        }
+        return
+    }
+
+    if (Macro.phase = "HARPOON") {
+        if (!Macro.cycleEnabled || !IsHarpoonUseEnabled()) {
+            StopHarpoonMacro()
+            return
+        }
+        UpdateMacroStatus("작살총", "---", "---")
         return
     }
 
     if (Macro.phase != "APPRAISE" && Macro.phase != "GP_APPRAISE" && Macro.phase != "TREASURE_APPRAISE"
         && Macro.phase != "ENCHANT" && Macro.phase != "GP_ENCHANT"
+        && Macro.phase != "HUMPBACK_SPAWN"
         && UpdateAutoTotem()) {
         UpdateMacroStatus(GetMacroDisplayStatus(), "---", "---")
         UpdateBuffStatusUi(false)
@@ -227,6 +278,7 @@ MacroLoop() {
 
     if (Macro.phase != "APPRAISE" && Macro.phase != "GP_APPRAISE" && Macro.phase != "TREASURE_APPRAISE"
         && Macro.phase != "ENCHANT" && Macro.phase != "GP_ENCHANT"
+        && Macro.phase != "HUMPBACK_SPAWN"
         && UpdateAutoBuffItems()) {
         UpdateMacroStatus(GetMacroDisplayStatus(), "---", "---")
         UpdateBuffStatusUi(true)
@@ -263,6 +315,8 @@ MacroLoop() {
             UpdateEnchantPhase()
         case "GP_ENCHANT":
             UpdateGamepassEnchantPhase()
+        case "HUMPBACK_SPAWN":
+            UpdateHumpbackSpawnPhase()
         case "OFF":
     }
 
@@ -294,6 +348,12 @@ StartMacroCycle() {
     if (MaybeStartAutoSovereignChargeFromFishing())
         return
 
+    ; Rod change replaces the Controller instance; the OLD controller's Reset()
+    ; is not called, so tear down anything it owns (e.g. Stellarwave's fast
+    ; scanner SetTimer, which would otherwise keep firing on the stale object).
+    if (IsSet(Controller) && IsObject(Controller) && Controller is StellarwaveController)
+        Controller.StopFastScanner()
+
     if (IsTranquilityRodText(ROD))
         Controller := TranquilityController()
     else if (IsLullabyRodText(ROD))
@@ -306,6 +366,10 @@ StartMacroCycle() {
         Controller := RequiemController()
     else if (IsNoiseformRodText(ROD))
         Controller := NoiseformController()
+    else if (IsHalibutHarpoonRodText(ROD))
+        Controller := HalibutHarpoonController()
+    else if (IsStellarwaveRodText(ROD))
+        Controller := StellarwaveController()
     else
         Controller := FishingController()
 	Dreambreaker := IsDreambreakerRodText(ROD)
@@ -371,6 +435,8 @@ GetMacroDisplayStatus() {
     global Macro, Controller
     if (Macro.phase = "WINDOW")
         return "창 사용"
+    if (Macro.phase = "HARPOON")
+        return "작살총"
     if (Macro.phase = "APPRAISE")
         return "APPRAISE " Macro.appraiseState
     if (Macro.phase = "GP_APPRAISE")
@@ -381,6 +447,8 @@ GetMacroDisplayStatus() {
         return "ENCHANT " Macro.enchantState
     if (Macro.phase = "GP_ENCHANT")
         return "GP_ENCHANT " Macro.enchantState
+    if (Macro.phase = "HUMPBACK_SPAWN")
+        return "HUMPBACK " Macro.humpbackSpawnState
     if (Macro.phase = "LULLABY") {
         mode := ""
         if (IsSet(Controller) && Controller is LullabyController && Controller.lockedMode != "")
@@ -975,8 +1043,11 @@ PrepareCatchPhaseEntry() {
     Macro.bellonaLeftCompletionReached := false
     Macro.bellonaRightCompletionReached := false
     Macro.lastShakedAt := 0
-    if (IsSet(Controller) && Controller)
+    if (IsSet(Controller) && Controller) {
         Controller.Reset()
+        if (Controller is StellarwaveController)
+            Controller.ClearGimmickProgress()
+    }
 }
 
 ; Join an already-active catch/minigame. Used on macro start and while CASTING
@@ -1052,9 +1123,10 @@ UpdateFishingPhase() {
     if (ctx) {
         Macro.fishingLostAt := 0
 
-        if (HasActiveFishingContext(ctx))
+        if (HasActiveFishingContext(ctx)) {
+            EnsureFishingCursorCentered()
             Controller.Update(ctx)
-        else
+        } else
             ReleaseMouse()
         return
     }
@@ -1100,6 +1172,7 @@ UpdateBellonaPhase() {
         }
     } else if (contexts.Length > 0 && Controller.HasActiveContext()) {
         Macro.fishingLostAt := 0
+        EnsureFishingCursorCentered()
         Controller.Update()
         return
     }
@@ -1199,11 +1272,13 @@ UpdateLullabyPhase() {
     if (ctx || metronomeActive) {
         Macro.fishingLostAt := 0
 
-        if (ctx && HasActiveFishingContext(ctx))
+        if (ctx && HasActiveFishingContext(ctx)) {
+            EnsureFishingCursorCentered()
             Controller.Update(ctx)
-        else if (metronomeActive)
+        } else if (metronomeActive) {
+            EnsureFishingCursorCentered()
             Controller.Update()
-        else
+        } else
             ReleaseMouse()
         return
     }
@@ -1259,6 +1334,10 @@ HoldMouse() {
     if ((Macro.phase = "FISHING" || Macro.phase = "LULLABY") && delay > 0 && Macro.lastActionAt && (A_TickCount - Macro.lastActionAt) < delay)
         return
 
+    ; Click & Hold Anywhere — keep cursor at client center for stable holds.
+    if (Macro.phase = "FISHING" || Macro.phase = "LULLABY" || Macro.phase = "BELLONA")
+        MoveMouseToRobloxClientCenter()
+
     Send("{LButton down}")
     Macro.isHolding := true
     Macro.lastActionAt := A_TickCount
@@ -1293,6 +1372,9 @@ HoldRightMouse() {
     if (delay > 0 && Macro.lastRightActionAt && (A_TickCount - Macro.lastRightActionAt) < delay)
         return
 
+    if (Macro.phase = "BELLONA")
+        MoveMouseToRobloxClientCenter()
+
     Send("{RButton down}")
     Macro.isHoldingRight := true
     Macro.lastRightActionAt := A_TickCount
@@ -1316,6 +1398,50 @@ ReleaseRightMouse(force := false) {
 ReleaseAllFishingMouse(force := false) {
     ReleaseMouse(force)
     ReleaseRightMouse(force)
+}
+
+; Keep the cursor at the Roblox client center during reel holds ("Click & Hold Anywhere").
+; Throttled; skips if already near center unless force=true (e.g. after a UI click).
+MoveMouseToRobloxClientCenter(force := false) {
+    static lastMovedAt := 0
+
+    if (!force && lastMovedAt && (A_TickCount - lastMovedAt) < 90)
+        return false
+
+    left := 0, top := 0, w := 0, h := 0
+    if !GetRobloxClientScreenRect(&left, &top, &w, &h)
+        return false
+    if (w < 32 || h < 32)
+        return false
+
+    cx := Round(left + w / 2)
+    cy := Round(top + h / 2)
+
+    if (!force) {
+        try {
+            MouseGetPos(&mx, &my)
+            if (Abs(mx - cx) <= 4 && Abs(my - cy) <= 4) {
+                lastMovedAt := A_TickCount
+                return false
+            }
+        } catch {
+        }
+    }
+
+    try MouseMove(cx, cy, 0)
+    catch {
+        return false
+    }
+    lastMovedAt := A_TickCount
+    return true
+}
+
+; While reeling, snap cursor back to center between special clicks (signs, etc.).
+EnsureFishingCursorCentered() {
+    global Macro
+    if !(Macro.phase = "FISHING" || Macro.phase = "LULLABY" || Macro.phase = "BELLONA")
+        return
+    MoveMouseToRobloxClientCenter()
 }
 
 ReadFramePosition(frameAddr) {
@@ -1522,6 +1648,197 @@ GetReelGui() {
         return 0
 
     return FindChildByName(playerGui, "reel")
+}
+
+; Spear / "창" minigame ScreenGui (PlayerGui). Primary name: stab.
+global g_WindowUseGuiCachedName := ""
+
+IsLikelyWindowUseGuiName(name) {
+    n := StrLower(Trim(name))
+    if (n = "")
+        return false
+    if (InStr(n, "setting") || InStr(n, "option") || InStr(n, "menu") || InStr(n, "modal")
+        || InStr(n, "confirm") || InStr(n, "dialog") || InStr(n, "prompt")
+        || InStr(n, "submarine") || InStr(n, "preference") || InStr(n, "config"))
+        return false
+    if (n = "stab" || InStr(n, "spear") || InStr(n, "harpoon") || n = "window"
+        || InStr(n, "windowgame") || InStr(n, "windowui") || InStr(n, "windowmini")
+        || InStr(n, "windowuse") || InStr(n, "weaponclick") || InStr(n, "clickgame")
+        || InStr(n, "clicker"))
+        return true
+    return false
+}
+
+IsWindowUseScreenGuiEnabled(gui) {
+    global OFFSETS
+    if (!gui)
+        return false
+    if (!OFFSETS.Has("ScreenGuiEnabled"))
+        return true
+    try return ReadByte(gui + (OFFSETS["ScreenGuiEnabled"] + 0)) ? true : false
+    catch {
+        return true
+    }
+}
+
+ResolveWindowUseGui(requireEnabled := false) {
+    global g_WindowUseGuiCachedName
+
+    playerGui := FindPlayerGui()
+    if (!playerGui)
+        return 0
+
+    if (g_WindowUseGuiCachedName != "") {
+        gui := FindChildByName(playerGui, g_WindowUseGuiCachedName)
+        if (!gui)
+            gui := FindChildByNameCI(playerGui, g_WindowUseGuiCachedName)
+        if (gui) {
+            if (!requireEnabled || IsWindowUseScreenGuiEnabled(gui))
+                return gui
+        } else {
+            g_WindowUseGuiCachedName := ""
+        }
+    }
+
+    static candidates := [
+        "stab", "Stab",
+        "spear", "Spear", "SpearFishing", "spearfishing", "SpearGame", "SpearMinigame",
+        "SpearUI", "spearui", "SpearClick", "window", "Window", "WindowGame", "WindowMinigame",
+        "WindowUI", "WindowUse", "WeaponClick", "ClickGame"
+    ]
+    for name in candidates {
+        gui := FindChildByName(playerGui, name)
+        if (!gui)
+            gui := FindChildByNameCI(playerGui, name)
+        if (!gui)
+            continue
+        if (requireEnabled && !IsWindowUseScreenGuiEnabled(gui))
+            continue
+        try g_WindowUseGuiCachedName := ReadInstanceName(gui)
+        catch {
+            g_WindowUseGuiCachedName := name
+        }
+        return gui
+    }
+
+    for childPtr in ReadChildren(playerGui) {
+        try {
+            if (ReadClassName(childPtr) != "ScreenGui")
+                continue
+            nm := ReadInstanceName(childPtr)
+            if !IsLikelyWindowUseGuiName(nm)
+                continue
+            if (requireEnabled && !IsWindowUseScreenGuiEnabled(childPtr))
+                continue
+            g_WindowUseGuiCachedName := nm
+            return childPtr
+        } catch {
+        }
+    }
+    return 0
+}
+
+GetWindowUseGui() {
+    return ResolveWindowUseGui(false)
+}
+
+IsWindowUseGuiVisible(gui := 0) {
+    if (gui)
+        return IsWindowUseScreenGuiEnabled(gui)
+    return ResolveWindowUseGui(true) ? true : false
+}
+
+; stab > bar AbsoluteSize grows once when the minigame actually starts (replaces fixed delay).
+global g_StabBarStartAddr := 0
+global g_StabBarBaselineW := ""
+global g_StabBarBaselineH := ""
+global g_StabBarGrown := false
+global g_StabBarWatchSince := 0
+
+ResetStabMinigameStartWatch() {
+    global g_StabBarStartAddr, g_StabBarBaselineW, g_StabBarBaselineH, g_StabBarGrown, g_StabBarWatchSince
+    g_StabBarStartAddr := 0
+    g_StabBarBaselineW := ""
+    g_StabBarBaselineH := ""
+    g_StabBarGrown := false
+    g_StabBarWatchSince := 0
+}
+
+GetStabBarFrame() {
+    global g_StabBarStartAddr
+
+    if (IsCachedAddrValid(g_StabBarStartAddr, "bar"))
+        return g_StabBarStartAddr
+
+    stabGui := ResolveWindowUseGui(true)
+    if (!stabGui)
+        return 0
+
+    bar := FindChildByName(stabGui, "bar")
+    if (!bar)
+        return 0
+
+    g_StabBarStartAddr := bar
+    return bar
+}
+
+; true once the stab bar has enlarged (minigame start pop).
+IsStabMinigameStarted() {
+    global g_StabBarBaselineW, g_StabBarBaselineH, g_StabBarGrown, g_StabBarWatchSince
+
+    if !IsWindowUseGuiVisible() {
+        ResetStabMinigameStartWatch()
+        return false
+    }
+
+    if (g_StabBarGrown)
+        return true
+
+    bar := GetStabBarFrame()
+    if (!bar)
+        return false
+
+    w := 0.0
+    h := 0.0
+    try {
+        rect := ReadAbsoluteRect(bar)
+        w := rect.w + 0.0
+        h := rect.h + 0.0
+    } catch {
+        return false
+    }
+
+    if (!g_StabBarWatchSince)
+        g_StabBarWatchSince := A_TickCount
+
+    if (g_StabBarBaselineW = "") {
+        g_StabBarBaselineW := w
+        g_StabBarBaselineH := h
+        return false
+    }
+
+    ; One-shot grow: width or height jumped from the first sample.
+    grewW := (w >= g_StabBarBaselineW + 15) || (g_StabBarBaselineW > 1 && w >= g_StabBarBaselineW * 1.12)
+    grewH := (h >= g_StabBarBaselineH + 15) || (g_StabBarBaselineH > 1 && h >= g_StabBarBaselineH * 1.12)
+    if (grewW || grewH) {
+        g_StabBarGrown := true
+        return true
+    }
+
+    ; Already fully open when we attached (missed the tween) — treat as started shortly.
+    if ((g_StabBarBaselineW >= 120 || g_StabBarBaselineH >= 40)
+        && (A_TickCount - g_StabBarWatchSince) >= 150) {
+        g_StabBarGrown := true
+        return true
+    }
+
+    ; Safety: GUI up a while with a usable bar size.
+    if ((A_TickCount - g_StabBarWatchSince) >= 2500 && (w >= 80 || h >= 30)) {
+        g_StabBarGrown := true
+        return true
+    }
+
+    return false
 }
 
 GetTranquilityGui() {
@@ -1967,6 +2284,7 @@ GetActiveNoteTarget() {
 global g_ReelDebugGui := 0
 global g_ReelDebugLastLogAt := 0
 global g_ReelDebugLastMode := ""
+global g_ReelDebugLastWarnMode := ""
 global REEL_DEBUG_LOG_PATH := ""
 
 IsReelDebugEnabled() {
@@ -2019,7 +2337,7 @@ HideReelDebugOverlay(*) {
 }
 
 PublishReelDebug(info) {
-    global g_ReelDebugLastLogAt, g_ReelDebugLastMode, g_ReelDebugGui
+    global g_ReelDebugLastLogAt, g_ReelDebugLastMode, g_ReelDebugLastWarnMode, g_ReelDebugGui
 
     if !IsReelDebugEnabled() {
         HideReelDebugOverlay()
@@ -2043,6 +2361,9 @@ PublishReelDebug(info) {
     metroRot := info.Has("metroRot") ? info["metroRot"] : ""
     metroHit := info.Has("metroHit") ? info["metroHit"] : ""
     metroPulses := info.Has("metroPulses") ? info["metroPulses"] : ""
+    halibutWarn := info.Has("halibutWarn") ? info["halibutWarn"] : ""
+    halibutFish := info.Has("halibutFish") ? info["halibutFish"] : ""
+    halibutMode := info.Has("halibutMode") ? info["halibutMode"] : ""
     forceLog := info.Has("forceLog") && info["forceLog"]
 
     bwText := (barWidth = "" || !IsNumber(barWidth)) ? "—" : Format("{:.3f}", barWidth + 0.0)
@@ -2057,6 +2378,10 @@ PublishReelDebug(info) {
     else
         hitText := (metroPulses != "" && IsNumber(metroPulses) && (metroPulses + 0) > 0) ? ("ok#" metroPulses) : "-"
 
+    warnText := (halibutWarn = "" || !IsNumber(halibutWarn)) ? "—" : Format("{:.3f}", halibutWarn + 0.0)
+    fishXText := (halibutFish = "" || !IsNumber(halibutFish)) ? "—" : Format("{:.3f}", halibutFish + 0.0)
+    warnModeText := (halibutMode = "") ? "—" : halibutMode
+
     body := Format(
         "REEL DEBUG{}`n"
         . "mode  {}  duty {:.2f}{}`n"
@@ -2066,7 +2391,8 @@ PublishReelDebug(info) {
         . "zone  {}`n"
         . "rod   {}`n"
         . "lull  {}  metro {}  rot {}`n"
-        . "tap   {}",
+        . "tap   {}`n"
+        . "warn  {}  fish {}  hMode {}",
         zone ? "  [ZONE]" : "",
         mode, duty + 0.0, (reason != "" ? "  (" reason ")" : ""),
         error + 0.0, Abs(error + 0.0),
@@ -2075,7 +2401,8 @@ PublishReelDebug(info) {
         zone ? "on" : "off",
         rod != "" ? rod : "—",
         lullText, metroInText, rotText,
-        hitText
+        hitText,
+        warnText, fishXText, warnModeText
     )
     try g_ReelDebugGui["Body"].Text := body
     try g_ReelDebugGui.Show("NoActivate AutoSize x12 y120")
@@ -2083,17 +2410,20 @@ PublishReelDebug(info) {
     if IsReelDebugLogEnabled() {
         now := A_TickCount
         modeChanged := (mode != g_ReelDebugLastMode)
-        if (forceLog || modeChanged || !g_ReelDebugLastLogAt || (now - g_ReelDebugLastLogAt) >= 50) {
+        warnModeChanged := (halibutMode != g_ReelDebugLastWarnMode)
+        if (forceLog || modeChanged || warnModeChanged || !g_ReelDebugLastLogAt || (now - g_ReelDebugLastLogAt) >= 50) {
             g_ReelDebugLastLogAt := now
             g_ReelDebugLastMode := mode
+            g_ReelDebugLastWarnMode := halibutMode
             pulsesText := (metroPulses = "" || !IsNumber(metroPulses)) ? "—" : (metroPulses + 0)
             ; rod uses underscores so lull/metro fields stay machine-parseable.
             line := Format(
-                "{1} mode={2} duty={3:.2f} reason={4} err={5:+.4f} barV={6:+.4f} fishV={7:+.4f} barW={8} inside={9} zone={10} lull={11} metro={12} rot={13} tap={14} pulses={15} rod={16}`r`n",
+                "{1} mode={2} duty={3:.2f} reason={4} err={5:+.4f} barV={6:+.4f} fishV={7:+.4f} barW={8} inside={9} zone={10} lull={11} metro={12} rot={13} tap={14} pulses={15} warn={16} fish={17} hMode={18} rod={19}`r`n",
                 FormatTime(, "HH:mm:ss.") SubStr(A_MSec + 1000, 2, 3),
                 mode, duty + 0.0, reason, error + 0.0, barVel + 0.0, fishVel + 0.0,
                 bwText, insideText, zone ? 1 : 0,
-                lullText, metroInText, rotText, hitText, pulsesText, rodLog
+                lullText, metroInText, rotText, hitText, pulsesText,
+                warnText, fishXText, warnModeText, rodLog
             )
             try FileAppend(line, GetReelDebugLogPath(), "UTF-8")
         }
@@ -2102,13 +2432,18 @@ PublishReelDebug(info) {
 
 ReelDebugExtrasFrom(controller) {
     extras := Map()
-    if !(controller is LullabyController)
-        return extras
-    extras["lullMode"] := controller.HasOwnProp("_dbgLullMode") ? controller._dbgLullMode : ""
-    extras["metroIn"] := controller.HasOwnProp("_dbgMetroIn") ? controller._dbgMetroIn : ""
-    extras["metroRot"] := controller.HasOwnProp("_dbgMetroRot") ? controller._dbgMetroRot : ""
-    extras["metroHit"] := controller.HasOwnProp("_dbgMetroHit") ? controller._dbgMetroHit : ""
-    extras["metroPulses"] := controller.HasOwnProp("_dbgMetroPulses") ? controller._dbgMetroPulses : ""
+    if (controller is LullabyController) {
+        extras["lullMode"] := controller.HasOwnProp("_dbgLullMode") ? controller._dbgLullMode : ""
+        extras["metroIn"] := controller.HasOwnProp("_dbgMetroIn") ? controller._dbgMetroIn : ""
+        extras["metroRot"] := controller.HasOwnProp("_dbgMetroRot") ? controller._dbgMetroRot : ""
+        extras["metroHit"] := controller.HasOwnProp("_dbgMetroHit") ? controller._dbgMetroHit : ""
+        extras["metroPulses"] := controller.HasOwnProp("_dbgMetroPulses") ? controller._dbgMetroPulses : ""
+    }
+    if (controller is HalibutHarpoonController) {
+        extras["halibutWarn"] := controller.HasOwnProp("_dbgWarnX") ? controller._dbgWarnX : ""
+        extras["halibutFish"] := controller.HasOwnProp("_dbgFishX") ? controller._dbgFishX : ""
+        extras["halibutMode"] := controller.HasOwnProp("_dbgWarnMode") ? controller._dbgWarnMode : ""
+    }
     return extras
 }
 
@@ -2196,11 +2531,15 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
 
     absErr := Abs(error)
     absVel := Abs(playerbarVelocity)
-    nearRightWall := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) > 0.78)
-    nearLeftWall := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) < 0.22)
+    ; Wall protection zone widened 0.22 → 0.32 (03:50 log: bar accelerated to
+    ; barV=-0.031 outside the 0.22 zone and slammed the left wall 4× in a row).
+    ; Earlier engagement gives FinishWall + ClampThinWallDuty more runway to
+    ; bleed velocity before impact.
+    nearRightWall := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) > 0.68)
+    nearLeftWall := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) < 0.32)
     ; Bounce detect uses a slightly wider band — impact often sits just inside edge clamp.
-    bounceLeftBand := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) < 0.38)
-    bounceRightBand := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) > 0.62)
+    bounceLeftBand := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) < 0.42)
+    bounceRightBand := (barPos != "" && IsNumber(barPos) && (barPos + 0.0) > 0.58)
 
     ClampThinWallDuty(duty) {
         ; Only bleed authority when already sliding into a wall — do not fight
@@ -3452,6 +3791,712 @@ class NoiseformController extends FishingController {
             opts["zoneTarget"] := true
         _StampReelDebug(this, error, playerbarVelocity, fishVelocity, barWidth, this.zoneTargetActive)
         ApplyReelControl(this, ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth, opts))
+    }
+}
+
+; ── Halibut Harpoon (Starforged Spirit): random ! warning appears above the bar ──
+; Goal: keep the fish inside the playerbar AND cover the ! together whenever it
+;       fits. No PID overshoot — every tick we compare pixel-space rects and
+;       either Hold (bar moves right) or Release (bar moves left) or PWM neutral.
+
+IsHalibutWarningName(name) {
+    n := StrLower(Trim(name))
+    if (n = "")
+        return false
+    needles := ["warning", "warn", "alert", "exclaim", "exclamation", "bang"
+        , "danger", "hazard", "shock", "notice", "mark", "caution", "ping"
+        , "halibut", "spiritwarn", "spirit_warn"]
+    for needle in needles {
+        if InStr(n, needle)
+            return true
+    }
+    return false
+}
+
+IsHalibutIgnoredReelChild(name) {
+    n := StrLower(Trim(name))
+    static skip := Map(
+        "fish", 1, "playerbar", 1, "progress", 1, "progresscontainers", 1,
+        "signcontainer", 1, "licon", 1, "ricon", 1, "shine", 1, "modal", 1,
+        "mobile", 1, "pc", 1, "progressspeed", 1, "trueprogressspeed", 1,
+        "uicorner", 1, "uistroke", 1, "uigradient", 1, "uiaspectratioconstraint", 1,
+        "uisizeconstraint", 1, "stylelink", 1, "uilistlayout", 1
+    )
+    return skip.Has(n)
+}
+
+; Return the active ! Absolute-pixel rect {x,y,w,h} above the reel bar, or "".
+; Rejects ghost containers (visible-but-empty ImageId or zero AbsoluteSize)
+; and anything vertically far from the reel bar center.
+GetHalibutWarningRect(barAddr := 0) {
+    global OFFSETS
+
+    if (!barAddr) {
+        ctx := GetReelBarContext()
+        if (!ctx || !ctx.bar)
+            return ""
+        barAddr := ctx.bar
+    }
+    if (!OFFSETS.Has("AbsolutePosition") || !OFFSETS.Has("AbsoluteSize"))
+        return ""
+
+    warnAddr := FindChildByName(barAddr, "warningContainer")
+    if (!warnAddr)
+        warnAddr := FindChildByName(barAddr, "warning")
+    if (!warnAddr)
+        return ""
+
+    try {
+        if (!ReadGuiObjectVisible(warnAddr))
+            return ""
+    } catch {
+        return ""
+    }
+
+    ; The inner "warning" ImageLabel holds the actual ! image.
+    inner := FindChildByName(warnAddr, "warning")
+    if (inner) {
+        try {
+            if (ReadGuiObjectVisible(inner))
+                warnAddr := inner
+        } catch {
+        }
+    }
+
+    ; Active bang exposes an ImageId (dump: 94863710580981). Empty = idle ghost.
+    if (OFFSETS.Has("GuiImage")) {
+        try {
+            if (NormalizeNoiseformImageId(ReadGuiImage(warnAddr)) = "")
+                return ""
+        } catch {
+        }
+    }
+
+    barRect := ReadAbsoluteRect(barAddr)
+    warnRect := ReadAbsoluteRect(warnAddr)
+    if (!IsObject(barRect) || !IsObject(warnRect))
+        return ""
+    if (barRect.w <= 1.0 || warnRect.w < 16.0 || warnRect.h < 16.0)
+        return ""
+
+    ; Bang always sits close to the bar vertically (dump: ~62px above center).
+    maxDy := Max(72.0, barRect.h * 3.5)
+    if (Abs((warnRect.y + warnRect.h / 2.0) - (barRect.y + barRect.h / 2.0)) > maxDy)
+        return ""
+
+    return warnRect
+}
+
+; Bar-relative center X in 0..1 for the active ! (used by Hunt.ahk dump probe).
+GetHalibutWarningCenter(barAddr := 0) {
+    if (!barAddr) {
+        ctx := GetReelBarContext()
+        if (!ctx || !ctx.bar)
+            return ""
+        barAddr := ctx.bar
+    }
+    r := GetHalibutWarningRect(barAddr)
+    if (!IsObject(r))
+        return ""
+    barRect := ReadAbsoluteRect(barAddr)
+    if (!IsObject(barRect) || barRect.w <= 1.0)
+        return ""
+    return ((r.x + r.w / 2.0) - barRect.x) / barRect.w
+}
+
+; PinionController-style: only override GetFishPosition and feed the base PID
+; a "virtual fish" that biases tracking toward the ! warning while keeping the
+; fish inside the playerbar. Base PID handles all preslow/ebrake/chase damping.
+;
+; Halibut is stricter than Pinion: the ! must sit definitively inside the bar
+; (not touching the edge), AND the fish must never leave. We use a midpoint
+; strategy so both centers share the same margin from their respective bar
+; edges — bar center at (fish + warn) / 2 gives each side `halfWidth − dist/2`
+; of headroom. When the two are too far apart to cover both with margin, we
+; fall back to protecting the fish (its `!` is a teleport preview — sitting
+; on the fish also means we're already positioned for the snap).
+class HalibutHarpoonController extends FishingController {
+    ; Minimum margin each of fish/warn needs from the corresponding bar edge
+    ; (Frame 0..1 units). ~0.035 ≈ 17.5% of a halfWidth of 0.20.
+    static COVER_MIN_MARGIN := 0.035
+    ; When the midpoint isn't feasible we push the fish this far inside the
+    ; near edge, then shift the bar to bring the warn as far in as possible.
+    static FISH_SAFE_MARGIN := 0.045
+
+    warnActive := false
+    _dbgWarnX := ""
+    _dbgFishX := ""
+    _dbgWarnMode := ""
+
+    Reset() {
+        super.Reset()
+        this.warnActive := false
+        this._dbgWarnX := ""
+        this._dbgFishX := ""
+        this._dbgWarnMode := ""
+    }
+
+    ; Midpoint-first strategy.
+    ;   distance = |warn − fish|
+    ;   midpointMax = fullWidth − 2*coverMargin   (both sides get coverMargin)
+    ;   asymMax     = fullWidth − fishSafeMargin  (fish protected, warn barely in)
+    ; Regions:
+    ;   distance ≤ midpointMax       → bar center = (fish + warn) / 2  (mode=mid)
+    ;   midpointMax < d ≤ asymMax    → bar center pushes toward warn while
+    ;                                    keeping fish inset by fishSafeMargin
+    ;                                    from its near edge         (mode=asym)
+    ;   distance > asymMax           → bar center = fish            (mode=fish)
+    ;
+    ; Base PID equilibrium is `playerbar_center = virtual_fish`, so returning
+    ; the desired bar-center target does the right thing.
+    GetBothTargets(fishX, warnX, halfWidth) {
+        distance := Abs(warnX - fishX)
+        fullWidth := halfWidth * 2.0
+        coverMargin := HalibutHarpoonController.COVER_MIN_MARGIN
+        fishSafeMargin := HalibutHarpoonController.FISH_SAFE_MARGIN
+
+        if (halfWidth <= coverMargin + 0.005) {
+            this._dbgWarnMode := "thin"
+            return fishX
+        }
+
+        midpointMax := fullWidth - 2.0 * coverMargin
+        if (midpointMax < 0)
+            midpointMax := 0
+        asymMax := fullWidth - fishSafeMargin
+        if (asymMax < midpointMax)
+            asymMax := midpointMax
+
+        if (distance <= midpointMax) {
+            this._dbgWarnMode := "mid"
+            return (fishX + warnX) / 2.0
+        }
+
+        if (distance <= asymMax) {
+            this._dbgWarnMode := "asym"
+            return warnX > fishX
+                ? fishX + halfWidth - fishSafeMargin
+                : fishX - halfWidth + fishSafeMargin
+        }
+
+        this._dbgWarnMode := "fish"
+        return fishX
+    }
+
+    GetFishPosition(ctx := "") {
+        if (ctx = "")
+            ctx := GetReelBarContext()
+
+        fishX := super.GetFishPosition(ctx)
+        this.warnActive := false
+        this._dbgFishX := (fishX != "" && IsNumber(fishX)) ? fishX : ""
+        this._dbgWarnX := ""
+        this._dbgWarnMode := ""
+
+        if (!ctx || !ctx.playerbar || !ctx.bar)
+            return fishX
+
+        warnX := GetHalibutWarningCenter(ctx.bar)
+        if (warnX = "" || !IsNumber(warnX)) {
+            this._dbgWarnMode := "none"
+            return fishX
+        }
+        this.warnActive := true
+        this._dbgWarnX := warnX
+
+        playerbarSize := ReadFrameSize(ctx.playerbar)
+        halfWidth := playerbarSize.X / 2
+        if (halfWidth <= 0.0) {
+            this._dbgWarnMode := "nobar"
+            return fishX
+        }
+
+        return this.GetBothTargets(fishX, warnX, halfWidth)
+    }
+}
+
+; ── Stellarwave Melody: fixed top zodiac row → click matching bottom signs ──
+; reel/Folder/signbar  (top, fixed L→R)  +  reel/bar/signContainer/sign1..12
+; Top and bottom use different ImageIds for the same constellation — map required.
+
+; Completed star fill ImageId (lit white star). Empty fill = not done yet.
+; STELLARWAVE_STAR_FILL_DONE := "111166873741690"
+
+NormalizeStellarwaveImageId(img) {
+    img := Trim(String(img))
+    if (img = "" || img = "0")
+        return ""
+    if (RegExMatch(img, "(\d{6,})", &m))
+        return m[1]
+    return img
+}
+
+IsStellarwaveStarFilled(starAddr) {
+    if (!starAddr)
+        return false
+    fill := FindChildByName(starAddr, "fill")
+    if (!fill)
+        return false
+    img := NormalizeStellarwaveImageId(ReadGuiImage(fill))
+    ; Done stars expose a fill ImageId (e.g. 111166873741690); pending fills are empty.
+    return (img != "")
+}
+
+; top(white sign) ImageId → bottom(baseSign) ImageId
+; Seeded from 20260828 dump + screenshot (Aries..Pisces L→R)
+GetStellarwaveTopToBottomMap() {
+    global APPDATA_DIR
+    static cached := ""
+    if (IsObject(cached))
+        return cached
+
+    m := Map(
+        ; top white ImageId → bottom purple baseSign ImageId
+        ; Verified 20260828 dump + screenshot (Aries..Pisces L→R)
+        "125302445958483", "87713177367461",   ; Aries
+        "117513835761256", "79785331277449",   ; Taurus
+        "118230882140700", "131660825899150",  ; Gemini
+        "115079204174105", "112848958832289",  ; Cancer
+        "125344705992662", "101622591206402",  ; Leo
+        "136666079531813", "134568966081333",  ; Virgo
+        "78728966038999", "78633129282959",    ; Libra
+        "108794287269065", "85750329590074",   ; Scorpio
+        "72337254711587", "135640910512677",   ; Sagittarius
+        "81139403523874", "118096235948723",   ; Capricorn
+        "104541677855659", "82332081547151",   ; Aquarius
+        "86735374079048", "131990023531922"    ; Pisces
+    )
+
+    try {
+        path := APPDATA_DIR "\stellarwave-sign-map.txt"
+        if FileExist(path) {
+            for line in StrSplit(FileRead(path, "UTF-8"), "`n", "`r") {
+                line := Trim(line)
+                if (line = "" || SubStr(line, 1, 1) = "#")
+                    continue
+                if RegExMatch(line, "^(\d{6,})\s*[=:,]\s*(\d{6,})", &mm)
+                    m[mm[1]] := mm[2]
+            }
+        }
+    } catch {
+    }
+
+    cached := m
+    return cached
+}
+
+GetStellarwaveSignbar(reelGui := 0) {
+    if (!reelGui)
+        reelGui := GetReelGui()
+    if (!reelGui)
+        return 0
+    return FindDescendantByNameAndClass(reelGui, "signbar", "Frame")
+}
+
+GetStellarwaveSignContainer(barAddr := 0) {
+    if (!barAddr) {
+        ctx := GetReelBarContext()
+        if (ctx && ctx.bar)
+            barAddr := ctx.bar
+    }
+    if (!barAddr) {
+        reelGui := GetReelGui()
+        if (reelGui)
+            barAddr := FindChildByName(reelGui, "bar")
+    }
+    if (!barAddr)
+        return 0
+    return FindChildByName(barAddr, "signContainer")
+}
+
+IsStellarwaveGimmickVisible(ctx := "") {
+    reelGui := GetReelGui()
+    if (!reelGui)
+        return false
+    signbar := GetStellarwaveSignbar(reelGui)
+    if (!signbar)
+        return false
+    try {
+        if (!ReadGuiObjectVisible(signbar))
+            return false
+    } catch {
+        return false
+    }
+    barAddr := (ctx && ctx.HasOwnProp("bar") && ctx.bar) ? ctx.bar : 0
+    container := GetStellarwaveSignContainer(barAddr)
+    if (!container)
+        return false
+    try {
+        return ReadGuiObjectVisible(container) ? true : false
+    } catch {
+        return false
+    }
+}
+
+; [{img, x, star, sign, filled}, ...] sorted left → right
+CollectStellarwaveTopSigns(signbar) {
+    items := []
+    if (!signbar)
+        return items
+    try {
+        for childPtr in ReadChildren(signbar) {
+            if (ReadInstanceName(childPtr) != "star")
+                continue
+            signAddr := FindChildByName(childPtr, "sign")
+            if (!signAddr)
+                continue
+            img := NormalizeStellarwaveImageId(ReadGuiImage(signAddr))
+            if (img = "")
+                continue
+            x := 0.0
+            try {
+                rect := ReadAbsoluteRect(childPtr)
+                if (IsObject(rect))
+                    x := rect.x + 0.0
+            } catch {
+            }
+            items.Push({
+                img: img,
+                x: x,
+                star: childPtr,
+                sign: signAddr,
+                filled: IsStellarwaveStarFilled(childPtr)
+            })
+        }
+    } catch {
+    }
+
+    ; insertion sort by AbsolutePosition.X
+    i := 2
+    while (i <= items.Length) {
+        key := items[i]
+        j := i - 1
+        while (j >= 1 && items[j].x > key.x) {
+            items[j + 1] := items[j]
+            j -= 1
+        }
+        items[j + 1] := key
+        i += 1
+    }
+    return items
+}
+
+; Count leading filled stars L→R (game progress). Do not invent our own counter.
+CountStellarwaveFilledStars(tops) {
+    n := 0
+    for t in tops {
+        if !t.filled
+            break
+        n += 1
+    }
+    return n
+}
+
+; Map bottomImageId → TextButton addr (remaining signN only — completed ones are removed)
+CollectStellarwaveBottomButtons(signContainer) {
+    out := Map()
+    if (!signContainer)
+        return out
+    try {
+        for childPtr in ReadChildren(signContainer) {
+            name := ReadInstanceName(childPtr)
+            if !RegExMatch(name, "^sign\d+$")
+                continue
+            if (ReadClassName(childPtr) != "TextButton")
+                continue
+            base := FindChildByName(childPtr, "baseSign")
+            if (!base)
+                continue
+            img := NormalizeStellarwaveImageId(ReadGuiImage(base))
+            if (img = "")
+                continue
+            out[img] := childPtr
+        }
+    } catch {
+        Loop 12 {
+            btn := FindChildByName(signContainer, "sign" A_Index)
+            if (!btn)
+                continue
+            base := FindChildByName(btn, "baseSign")
+            if (!base)
+                continue
+            img := NormalizeStellarwaveImageId(ReadGuiImage(base))
+            if (img = "")
+                continue
+            out[img] := btn
+        }
+    }
+    return out
+}
+
+; Click next unfilled top→bottom pair. Progress comes from star fill GUI — never
+; reset mid-gimmick just because the UI flickered or a sign slot disappeared.
+;
+; Guard order matters for latency: check fill/pending FIRST so we can click the
+; instant the game acknowledges the previous click. `CLICK_COOLDOWN_MS` is only
+; an anti-double-fire safety window; it does not throttle the actual chain.
+;
+; Called from both the main MacroLoop tick and the fast scanner timer. A static
+; `_busy` reentrancy guard prevents the two paths from double-clicking each
+; other during Sleep-based preemption inside the click sequence.
+TryClickStellarwaveNextSign(controller, ctx := "") {
+    global Macro
+    static _busy := false
+
+    if (!IsObject(controller))
+        return false
+    if (_busy)
+        return false
+    _busy := true
+    try {
+        return _TryClickStellarwaveNextSignInner(controller, ctx)
+    } finally {
+        _busy := false
+    }
+}
+
+_TryClickStellarwaveNextSignInner(controller, ctx := "") {
+    global Macro
+
+    if (!IsStellarwaveGimmickVisible(ctx))
+        return false
+
+    reelGui := GetReelGui()
+    signbar := GetStellarwaveSignbar(reelGui)
+    barAddr := (ctx && ctx.HasOwnProp("bar") && ctx.bar) ? ctx.bar : 0
+    container := GetStellarwaveSignContainer(barAddr)
+    tops := CollectStellarwaveTopSigns(signbar)
+    if (tops.Length < 1)
+        return false
+
+    filled := CountStellarwaveFilledStars(tops)
+    controller.swFilled := filled
+    if (filled >= tops.Length) {
+        controller.swDone := true
+        return false
+    }
+
+    ; Fill-driven advancement: only guard is "the game hasn't confirmed the
+    ; previous click yet". No time-based cooldown — as soon as fill increments
+    ; we can fire again.
+    if (controller.swPendingFill > 0) {
+        if (filled >= controller.swPendingFill) {
+            controller.swPendingFill := 0
+        } else if ((A_TickCount - controller.swLastClickAt) < StellarwaveController.FILL_WAIT_MS) {
+            return false
+        } else {
+            ; Timed out waiting for fill — retry same target from GUI state.
+            controller.swPendingFill := 0
+        }
+    }
+
+    ; Optional anti-double-fire safety window. Set to 0 for "throw stability
+    ; away" mode; every click still gates on the pending-fill check above.
+    if (StellarwaveController.CLICK_COOLDOWN_MS > 0
+        && (A_TickCount - controller.swLastClickAt) < StellarwaveController.CLICK_COOLDOWN_MS)
+        return false
+
+    nextIdx := filled + 1  ; 1-based into tops
+    top := tops[nextIdx]
+    if (top.filled)
+        return false
+
+    bottoms := CollectStellarwaveBottomButtons(container)
+    pairMap := GetStellarwaveTopToBottomMap()
+    bottomImg := pairMap.Has(top.img) ? pairMap[top.img] : ""
+    if (bottomImg = "" || !bottoms.Has(bottomImg))
+        return false
+
+    btn := bottoms[bottomImg]
+
+    ; Release the reel-hold before firing the click. A 3 ms yield gives
+    ; Roblox one message-loop pass to process the LButton up before our
+    ; synthesized down/up arrives; without it the game often loses the click.
+    if (Macro.isHolding) {
+        Send("{LButton up}")
+        Macro.isHolding := false
+        Sleep(3)
+    }
+
+    ok := _StellarwaveFastClick(controller, btn)
+    controller.swLastClickAt := A_TickCount
+    if (ok) {
+        controller.swPendingFill := filled + 1
+        controller.swDone := false
+        controller._dbgSwNext := nextIdx
+        controller._dbgSwTarget := bottomImg
+        controller._dbgSwFilled := filled
+    }
+    return ok
+}
+
+; Ultra-fast click for a Roblox GUI button. Cuts all sleeps but keeps the tiny
+; 1-pixel wiggle Roblox uses to trigger hover state — without it TextButtons
+; often ignore synthetic clicks that never "moved" into them.
+;
+; After the click we snap the cursor back to the cached Roblox client center so
+; the reel PID's next `Hold` doesn't accidentally press the button we just hit.
+_StellarwaveFastClick(controller, btn) {
+    if (!btn)
+        return false
+    rect := ReadAbsoluteRect(btn)
+    if (rect.w <= 1 || rect.h <= 1)
+        return false
+
+    pos := GuiCenterToScreen(btn)
+    if (!IsObject(pos))
+        return false
+
+    if (!controller._swSafeX)
+        _StellarwaveCacheSafePos(controller)
+
+    ; Focus is cheap and prevents clicks landing on stray foreground windows
+    ; if something (an AHK GUI, tooltip, etc.) briefly stole focus.
+    FocusRobloxWindow()
+
+    prev := A_CoordModeMouse
+    CoordMode("Mouse", "Screen")
+    try {
+        ; Tuned via StellarwaveController.CLICK_WIGGLE_PX / CLICK_STEP_MS.
+        ; Roblox needs the wiggle motion to span at least one input sample
+        ; (~16 ms at 60 Hz) or the TextButton drops the click.
+        ReliableScreenClick(
+            pos.x, pos.y,
+            StellarwaveController.CLICK_WIGGLE_PX,
+            StellarwaveController.CLICK_STEP_MS
+        )
+
+        if (controller._swSafeX)
+            MouseMove(controller._swSafeX, controller._swSafeY, 0)
+    } finally {
+        CoordMode("Mouse", prev)
+    }
+    return true
+}
+
+; Cache the Roblox client center once per gimmick. This is where the reel PID
+; expects the cursor to sit while it holds LMB, so we snap back here after each
+; sign click to avoid the next Hold clicking the sign under the cursor.
+_StellarwaveCacheSafePos(controller) {
+    left := 0, top := 0, w := 0, h := 0
+    if !GetRobloxClientScreenRect(&left, &top, &w, &h)
+        return
+    if (w < 32 || h < 32)
+        return
+    controller._swSafeX := Round(left + w / 2)
+    controller._swSafeY := Round(top + h / 2)
+}
+
+; Stellarwave Melody: solve zodiac sign gimmick, then normal reel PID.
+; Progress is owned by star fill GUI — do not clear until a new catch starts
+; (ClearGimmickProgress) or all 12 are done. Brief reel flicker must not rewind.
+;
+; The gimmick runs a dedicated fast-poll SetTimer while the reel is active. It
+; preempts the main MacroLoop tick during any Sleep, giving effective parallel
+; scanning: the scanner keeps looking for the next matching sign so the click
+; fires the instant the previous fill lands, instead of waiting for the next
+; ~21 ms MacroLoop tick.
+class StellarwaveController extends FishingController {
+    ; Anti-double-fire safety window between clicks (fill-driven advancement
+    ; still gates repeats — this is only a mouse-event overlap guard). 0 = off.
+    static CLICK_COOLDOWN_MS := 0
+    ; Max wait for a click to register as a filled star before we retry.
+    static FILL_WAIT_MS := 0
+    ; Fast scanner poll cadence (ms). Preempts the main loop during Sleep.
+    static FAST_POLL_INTERVAL_MS := 0
+    ; Wiggle knobs for the sign click. Roblox samples raw input at ~60 Hz
+    ; (~16 ms), so wiggle motion must span long enough for the game to observe
+    ; the cursor "enter" event before the click fires. STEP_MS ≥ 3–5 in
+    ; practice; below that Roblox often skips the hover and eats the click.
+    ; Total per click ≈ 6 × STEP_MS ms.
+    static CLICK_WIGGLE_PX := 1
+    static CLICK_STEP_MS := 0.5
+
+    swLastClickAt := 0
+    swPendingFill := 0
+    swFilled := 0
+    swDone := false
+    _swTimerFn := 0
+    _swTimerActive := false
+    _swSafeX := 0
+    _swSafeY := 0
+
+    Reset() {
+        ; Only PID state — keep gimmick progress across brief reel/context loss.
+        super.Reset()
+        this.StopFastScanner()
+        this._swSafeX := 0
+        this._swSafeY := 0
+    }
+
+    __Delete() {
+        this.StopFastScanner()
+    }
+
+    ClearGimmickProgress() {
+        this.swLastClickAt := 0
+        this.swPendingFill := 0
+        this.swFilled := 0
+        this.swDone := false
+        this._dbgSwNext := 0
+        this._dbgSwTarget := ""
+        this._dbgSwFilled := 0
+    }
+
+    StartFastScanner() {
+        if (this._swTimerActive)
+            return
+        if (!this._swTimerFn)
+            this._swTimerFn := ObjBindMethod(this, "_FastScanTick")
+        SetTimer(this._swTimerFn, StellarwaveController.FAST_POLL_INTERVAL_MS)
+        this._swTimerActive := true
+    }
+
+    StopFastScanner() {
+        if (!this._swTimerActive)
+            return
+        try {
+            if (this._swTimerFn)
+                SetTimer(this._swTimerFn, 0)
+        } catch {
+        }
+        this._swTimerActive := false
+    }
+
+    ; Preempting timer callback. Kept small: any error must not kill the timer.
+    _FastScanTick() {
+        global Macro
+        try {
+            if (!IsSet(Macro) || !Macro.HasOwnProp("cycleEnabled") || !Macro.cycleEnabled) {
+                this.StopFastScanner()
+                return
+            }
+            if (this.swDone) {
+                this.StopFastScanner()
+                return
+            }
+            TryClickStellarwaveNextSign(this)
+        } catch {
+        }
+    }
+
+    Update(ctx := "") {
+        if (ctx = "")
+            ctx := GetReelBarContext()
+
+        ; Kick the parallel scanner while we're actively reeling — it will click
+        ; the next sign immediately when the game acknowledges the previous one.
+        if (!this.swDone)
+            this.StartFastScanner()
+        else
+            this.StopFastScanner()
+
+        ; Also try once on this tick so we don't wait a full poll interval on
+        ; the very first click after entering the gimmick.
+        if (TryClickStellarwaveNextSign(this, ctx))
+            return
+
+        super.Update(ctx)
     }
 }
 

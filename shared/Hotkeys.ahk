@@ -34,6 +34,7 @@ global _LastVersionCheckAt := 0
 ; it resumes on its own; the flag flipping back suppresses nothing further.
 CheckRobloxVersionMismatch(pid) {
     global _LastVersionCheckAt, VERSION_CHECK_COOLDOWN_MS, g_BuildUnsupported
+    global g_LatestSupportedOffsetsVersion
 
     if (!pid)
         return
@@ -51,10 +52,14 @@ CheckRobloxVersionMismatch(pid) {
         ; silently skipping the check forever -- that silence is how users ended up
         ; parked on "Join a Fisch server" while inside Fisch. Transient failures
         ; (OpenProcess etc.) don't carry the marker and stay invisible, as before.
-        if (InStr(err.Message, "Version hash not found"))
-            _FlagBuildUnsupported(
-                "This Roblox install doesn't expose a build version (Microsoft Store "
-                . "Roblox?). Install Roblox from roblox.com to use XTernal.")
+        if (InStr(err.Message, "Version hash not found")) {
+            latest := _ResolveLatestSupportedVersion()
+            tip := "이 로블록스 설치에는 빌드 버전이 없습니다 (Microsoft Store?). "
+                . "roblox.com에서 설치하세요."
+            if (latest != "")
+                tip .= "`n매크로 최신: " latest
+            _FlagBuildUnsupported(tip)
+        }
         return
     }
 
@@ -66,17 +71,36 @@ CheckRobloxVersionMismatch(pid) {
         ; even if a newer build exists. 0 = couldn't reach the API -> unknown, so we
         ; leave the flag as-is rather than guess.
         status := GetOffsetsVersionStatus(runningHash)
-        if (status = 404)
-            _FlagBuildUnsupported(
-                "이 로블록스 버전용 오프셋이 아직 없습니다. 베타 빌드일 수 있습니다. "
-                . "지원되면 XTernal이 자동으로 다시 동작하며, 정식 로블록스 버전으로 "
-                . "바꿔도 됩니다.")
-        else if (status = 200)
+        if (status = 404) {
+            latest := _ResolveLatestSupportedVersion()
+            tip := "이 로블록스 버전용 오프셋이 아직 없습니다. 베타 빌드일 수 있습니다. "
+                . "지원되면 자동으로 다시 동작합니다."
+            if (latest != "")
+                tip .= "`n매크로 최신: " latest
+            _FlagBuildUnsupported(tip)
+        } else if (status = 200) {
             g_BuildUnsupported := false
+            g_LatestSupportedOffsetsVersion := ""
+        }
     } catch {
         ; Version check failed (offline, etc.) -- unknown, so don't flip the flag. The
         ; offsets fetch path surfaces any real failure on its own.
     }
+}
+
+; API latest hash, else the version already loaded from offsets.json.
+_ResolveLatestSupportedVersion() {
+    global g_LatestSupportedOffsetsVersion, OFFSETS_ROBLOX_VERSION
+
+    latest := ""
+    try
+        latest := GetLatestOffsetsVersionHash()
+    catch {
+    }
+    if (latest = "" && IsSet(OFFSETS_ROBLOX_VERSION) && OFFSETS_ROBLOX_VERSION != "")
+        latest := OFFSETS_ROBLOX_VERSION
+    g_LatestSupportedOffsetsVersion := latest
+    return latest
 }
 
 ; Rising edge only -- one muted tray tip per unsupported episode, then just the
@@ -88,6 +112,15 @@ _FlagBuildUnsupported(tipText) {
     g_BuildUnsupported := true
 }
 
+; Shared status line for GUI / host / headless.
+GetUnsupportedBuildStatusText() {
+    global g_LatestSupportedOffsetsVersion
+    base := "지원하지 않는 로블록스 빌드"
+    if (IsSet(g_LatestSupportedOffsetsVersion) && g_LatestSupportedOffsetsVersion != "")
+        return base " (매크로 최신: " g_LatestSupportedOffsetsVersion ")"
+    return base
+}
+
 StartMacro() {
     global Macro
 
@@ -96,6 +129,9 @@ StartMacro() {
         if (Macro.phase = "WINDOW") {
             StopWindowUseMacro(false)
             StopMacroMouseTip("창 사용 OFF")
+        } else if (Macro.phase = "HARPOON") {
+            StopHarpoonMacro(false)
+            StopMacroMouseTip("작살총 OFF")
         } else if (Macro.phase = "APPRAISE" || Macro.phase = "GP_APPRAISE" || Macro.phase = "TREASURE_APPRAISE") {
             if (Macro.phase = "TREASURE_APPRAISE")
                 StopTreasureAppraiseCycle("OFF")
@@ -105,6 +141,9 @@ StartMacro() {
         } else if (Macro.phase = "ENCHANT" || Macro.phase = "GP_ENCHANT") {
             StopEnchantCycle("OFF")
             StopMacroMouseTip("인챈트 OFF")
+        } else if (Macro.phase = "HUMPBACK_SPAWN") {
+            StopHumpbackSpawnCycle("OFF")
+            StopMacroMouseTip("혹등 스폰 OFF")
         } else {
             StopMacroCycle("OFF")
             StopMacroMouseTip("낚시 OFF")
@@ -117,7 +156,15 @@ StartMacro() {
 
     UpdateRobloxUiState()
 
-    ; Active tab decides mode: 감정 / 인챈트 tab, anything else = fishing.
+    ; Headless: AHK 탭이 없으므로 호스트에서 고른 모드로 시작 (F1 포함)
+    global g_HostHeadless, g_HostRequestedMode
+    if (IsSet(g_HostHeadless) && g_HostHeadless) {
+        mode := (IsSet(g_HostRequestedMode) && g_HostRequestedMode != "") ? g_HostRequestedMode : "fish"
+        StartMacroWithMode(mode)
+        return
+    }
+
+    ; Active tab decides mode: 감정 / 인챈트 / 기타 탭, anything else = fishing.
     if (IsAppraisalTabActive()) {
         if (Macro.phase = "OFF" || Macro.phase = "DONE" || Macro.phase = "FAILED") {
             if (IsTreasureAppraiseEnabled())
@@ -142,11 +189,43 @@ StartMacro() {
         return
     }
 
-    ; 창 사용 토글 ON이면 낚시 대신 좌·우 연타 스크립트 실행
+    if (IsMiscTabActive()) {
+        if (Macro.phase = "OFF" || Macro.phase = "DONE" || Macro.phase = "FAILED") {
+            if (StartHumpbackSpawnCycle())
+                StartMacroMouseTip("혹등 스폰 ON")
+        }
+        return
+    }
+
+    if (IsWindowHarpoonTabActive()) {
+        if (IsHarpoonUseEnabled()) {
+            StartHarpoonMacro()
+            if (Macro.phase = "HARPOON")
+                StartMacroMouseTip("작살총 ON")
+            return
+        }
+        if (IsWindowUseEnabled()) {
+            StartWindowUseMacro()
+            if (Macro.phase = "WINDOW")
+                StartMacroMouseTip("창 사용 ON")
+            return
+        }
+        MsgBox("창 또는 작살총 토글을 먼저 켜세요.", "창&작살")
+        return
+    }
+
+    ; 창 사용 토글 ON이면 낚시 대신 좌·우 연타 (다른 탭에서도 유지)
     if (IsWindowUseEnabled()) {
         StartWindowUseMacro()
         if (Macro.phase = "WINDOW")
             StartMacroMouseTip("창 사용 ON")
+        return
+    }
+
+    if (IsHarpoonUseEnabled()) {
+        StartHarpoonMacro()
+        if (Macro.phase = "HARPOON")
+            StartMacroMouseTip("작살총 ON")
         return
     }
 
@@ -155,8 +234,14 @@ StartMacro() {
         Sleep(200)
     }
 
-    ; Safety: never leave the L/R clicker running during normal fishing.
+    ; Safety: never leave the L/R clicker / harpoon running during normal fishing.
     StopWindowUseClicker()
+    try StopWindowUseMacro(false)
+    catch {
+    }
+    try StopHarpoonMacro(false)
+    catch {
+    }
 
     Macro.cycleEnabled := true
 
@@ -165,14 +250,176 @@ StartMacro() {
     StartMacroMouseTip("낚시 ON")
 }
 
+; Host / headless: 탭 대신 mode 문자열로 시작.
+; 이미 다른 모드가 켜져 있으면 먼저 끈 뒤 새 모드로 전환.
+StartMacroWithMode(mode := "fish") {
+    global Macro, MAIN, SETTINGS
+
+    mode := StrLower(Trim(mode))
+    if (mode = "")
+        mode := "fish"
+
+    if (Macro.cycleEnabled)
+        StopMacroForHost()
+
+    if !EnsureRobloxReady(false, true)
+        return false
+
+    UpdateRobloxUiState()
+
+    if (mode = "appraise" || mode = "treasure" || mode = "gp_appraise") {
+        if (mode = "treasure" || IsTreasureAppraiseEnabled())
+            StartTreasureAppraiseCycle()
+        else if (IsGamepassAppraiseRuntimeEnabled())
+            StartGamepassAppraiseCycle()
+        else
+            StartAppraiseCycle()
+        if (Macro.cycleEnabled)
+            StartMacroMouseTip("감정 ON")
+        return Macro.cycleEnabled
+    }
+
+    if (mode = "enchant" || mode = "gp_enchant") {
+        if (IsGamepassEnchantRuntimeEnabled())
+            StartGamepassEnchantCycle()
+        else
+            StartEnchantCycle()
+        if (Macro.cycleEnabled)
+            StartMacroMouseTip("인챈트 ON")
+        return Macro.cycleEnabled
+    }
+
+    if (mode = "humpback" || mode = "misc") {
+        if (StartHumpbackSpawnCycle())
+            StartMacroMouseTip("혹등 스폰 ON")
+        return Macro.cycleEnabled
+    }
+
+    if (mode = "window") {
+        MAIN["window_use_enabled"] := 1
+        MAIN["harpoon_use_enabled"] := 0
+        if (SETTINGS.Has("main")) {
+            SETTINGS["main"]["window_use_enabled"] := 1
+            SETTINGS["main"]["harpoon_use_enabled"] := 0
+        }
+        StartWindowUseMacro()
+        if (Macro.phase = "WINDOW")
+            StartMacroMouseTip("창 사용 ON")
+        return Macro.cycleEnabled
+    }
+
+    if (mode = "harpoon") {
+        MAIN["harpoon_use_enabled"] := 1
+        MAIN["window_use_enabled"] := 0
+        if (SETTINGS.Has("main")) {
+            SETTINGS["main"]["harpoon_use_enabled"] := 1
+            SETTINGS["main"]["window_use_enabled"] := 0
+        }
+        StartHarpoonMacro()
+        if (Macro.phase = "HARPOON")
+            StartMacroMouseTip("작살총 ON")
+        return Macro.cycleEnabled
+    }
+
+    ; default: fish
+    if (!IsAnythingEquipped()) {
+        SendInput("t")
+        Sleep(200)
+    }
+    StopWindowUseClicker()
+    Macro.cycleEnabled := true
+    if (Macro.phase = "OFF" || Macro.phase = "DONE" || Macro.phase = "FAILED")
+        StartMacroCycle()
+    StartMacroMouseTip("낚시 ON")
+    return true
+}
+
+StopMacroForHost() {
+    global Macro
+    if (!IsSet(Macro) || !Macro || !Macro.cycleEnabled)
+        return
+
+    Macro.cycleEnabled := false
+    if (Macro.phase = "WINDOW") {
+        StopWindowUseMacro(false)
+        StopMacroMouseTip("창 사용 OFF")
+    } else if (Macro.phase = "HARPOON") {
+        StopHarpoonMacro(false)
+        StopMacroMouseTip("작살총 OFF")
+    } else if (Macro.phase = "APPRAISE" || Macro.phase = "GP_APPRAISE" || Macro.phase = "TREASURE_APPRAISE") {
+        if (Macro.phase = "TREASURE_APPRAISE")
+            StopTreasureAppraiseCycle("OFF")
+        else
+            StopAppraiseCycle("OFF")
+        StopMacroMouseTip("감정 OFF")
+    } else if (Macro.phase = "ENCHANT" || Macro.phase = "GP_ENCHANT") {
+        StopEnchantCycle("OFF")
+        StopMacroMouseTip("인챈트 OFF")
+    } else if (Macro.phase = "HUMPBACK_SPAWN") {
+        StopHumpbackSpawnCycle("OFF")
+        StopMacroMouseTip("혹등 스폰 OFF")
+    } else {
+        StopMacroCycle("OFF")
+        StopMacroMouseTip("낚시 OFF")
+    }
+}
+
 global g_MacroMouseTipText := ""
 global g_MacroMouseTipGui := 0
+global g_MacroGuiMinimizedForRun := false
+global g_MacroGuiShouldRestore := false
+
+IsMinimizeOnMacroEnabled() {
+    global USERPREFS
+    if (!IsSet(USERPREFS) || !USERPREFS)
+        return true
+    return USERPREFS.Has("minimize_on_macro") ? (USERPREFS["minimize_on_macro"] + 0) : 1
+}
+
+MinimizeMacroGuiForRun() {
+    global g_MainGuiHwnd, g_MacroGuiMinimizedForRun, g_MacroGuiShouldRestore
+    if !IsMinimizeOnMacroEnabled()
+        return
+    if (!IsSet(g_MainGuiHwnd) || !g_MainGuiHwnd)
+        return
+
+    ; 이번 실행에서 처음일 때만: 원래 최소화였으면 종료 시 복원하지 않음
+    if (!g_MacroGuiMinimizedForRun) {
+        wasMin := false
+        try wasMin := (WinGetMinMax("ahk_id " g_MainGuiHwnd) = -1)
+        catch {
+        }
+        g_MacroGuiShouldRestore := !wasMin
+        g_MacroGuiMinimizedForRun := true
+    }
+
+    try WinMinimize("ahk_id " g_MainGuiHwnd)
+    catch {
+    }
+}
+
+RestoreMacroGuiAfterRun() {
+    global g_MainGuiHwnd, g_MacroGuiMinimizedForRun, g_MacroGuiShouldRestore
+    shouldRestore := g_MacroGuiMinimizedForRun && g_MacroGuiShouldRestore
+    g_MacroGuiMinimizedForRun := false
+    g_MacroGuiShouldRestore := false
+    if !shouldRestore
+        return
+    if (!IsSet(g_MainGuiHwnd) || !g_MainGuiHwnd)
+        return
+    try {
+        if WinExist("ahk_id " g_MainGuiHwnd)
+            WinRestore("ahk_id " g_MainGuiHwnd)
+    } catch {
+    }
+}
 
 ; 매크로가 켜진 동안 마우스 옆에 상태를 계속 표시
 ; (ToolTip은 클릭 시 바로 사라져서, 창 사용 연타 중에는 AlwaysOnTop GUI 사용)
 StartMacroMouseTip(text) {
     global g_MacroMouseTipText
     g_MacroMouseTipText := text
+    MinimizeMacroGuiForRun()
     EnsureMacroMouseTipGui(text)
     SetTimer(UpdateMacroMouseTip, 30)
     UpdateMacroMouseTip()
@@ -182,6 +429,7 @@ StopMacroMouseTip(briefText := "") {
     global g_MacroMouseTipText, g_MacroMouseTipGui
     SetTimer(UpdateMacroMouseTip, 0)
     g_MacroMouseTipText := ""
+    RestoreMacroGuiAfterRun()
 
     if (briefText != "") {
         EnsureMacroMouseTipGui(briefText)
@@ -243,12 +491,22 @@ UpdateMacroMouseTip() {
 
 IsAppraisalTabActive() {
     global g_MainTab
-    return IsSet(g_MainTab) && g_MainTab && (g_MainTab.Value = 2)
+    return IsSet(g_MainTab) && g_MainTab && (g_MainTab.Value = 3)
 }
 
 IsEnchantTabActive() {
     global g_MainTab
-    return IsSet(g_MainTab) && g_MainTab && (g_MainTab.Value = 3)
+    return IsSet(g_MainTab) && g_MainTab && (g_MainTab.Value = 4)
+}
+
+IsWindowHarpoonTabActive() {
+    global g_MainTab
+    return IsSet(g_MainTab) && g_MainTab && (g_MainTab.Value = 2)
+}
+
+IsMiscTabActive() {
+    global g_MainTab
+    return IsSet(g_MainTab) && g_MainTab && (g_MainTab.Value = 7)
 }
 
 FixRoblox() {
@@ -287,6 +545,8 @@ StopAppraisingHotkey() {
         StopAppraiseCycle("OFF", "단축키로 중지됨.")
     else if ((Macro.phase = "ENCHANT" || Macro.phase = "GP_ENCHANT") && Macro.cycleEnabled)
         StopEnchantCycle("OFF", "단축키로 중지됨.")
+    else if ((Macro.phase = "HUMPBACK_SPAWN") && Macro.cycleEnabled)
+        StopHumpbackSpawnCycle("OFF", "단축키로 중지됨.")
 }
 
 ; F6: 현재 마우스 화면좌표 기록 + SizeOffset 자동 보정
