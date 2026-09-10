@@ -22,7 +22,7 @@
 ; ============================================================================
 #Requires AutoHotkey v2.0
 
-; Anonymous, always-on telemetry for the free XTernal client. Identity is a
+; Optional telemetry, disabled by default. Identity is a
 ; client-generated install UUID (persisted in APPDATA) plus a salted SHA256 of
 ; the machine GUID so reinstalls dedupe to one device. No accounts, no PII.
 ;
@@ -37,8 +37,31 @@ global TELEMETRY_HEARTBEAT_INTERVAL := 300000        ; 5 minutes
 global TELEMETRY_HWID_SALT          := "openmacro-xternal-telemetry-v1"
 global g_TelemetryInstallId         := ""
 global g_TelemetryHwidHash          := ""
+global g_TelemetryRequest := 0
+
+IsTelemetryEnabled() {
+    global SETTINGS
+    return SETTINGS.Has("user") && SETTINGS["user"].Has("telemetry_enabled")
+        && SETTINGS["user"]["telemetry_enabled"] = 1
+}
+
+SetTelemetryEnabled(enabled) {
+    global SETTINGS, g_TelemetryRequest
+    SETTINGS["user"]["telemetry_enabled"] := enabled ? 1 : 0
+    SaveSettingsFile()
+    SetTimer(SendHeartbeat, 0)
+    if (!enabled && g_TelemetryRequest) {
+        req := g_TelemetryRequest
+        g_TelemetryRequest := 0
+        try req.Abort()
+    }
+    if enabled
+        InitTelemetry()
+}
 
 InitTelemetry() {
+    if !IsTelemetryEnabled()
+        return
     ; Prime identity now (cheap, cached) and arm the heartbeat. The first beat
     ; is a one-shot a moment after startup so a dead network can't stall init;
     ; SendHeartbeat re-arms itself as a periodic timer.
@@ -49,6 +72,10 @@ InitTelemetry() {
 
 SendHeartbeat() {
     global TELEMETRY_HEARTBEAT_INTERVAL
+    if !IsTelemetryEnabled() {
+        SetTimer(SendHeartbeat, 0)
+        return
+    }
     ; Re-arm as periodic (covers the initial one-shot -> steady cadence).
     SetTimer(SendHeartbeat, TELEMETRY_HEARTBEAT_INTERVAL)
     try _TelemetryPost(_TelemetryEnvelope())
@@ -60,6 +87,8 @@ SendHeartbeat() {
 ; tells the backend everything a report a second would -- without a lone broken
 ; client writing ~86k telemetry rows in a weekend.
 SendOffsetHealthTelemetry(robloxVersion, fetchOk, versionMatch, readsOk, placeId, apiBase) {
+    if !IsTelemetryEnabled()
+        return
     static OFFSET_HEALTH_MIN_INTERVAL_MS := 60000
     static lastSentAt := 0
 
@@ -72,6 +101,8 @@ SendOffsetHealthTelemetry(robloxVersion, fetchOk, versionMatch, readsOk, placeId
 }
 
 _SendOffsetHealthNow(robloxVersion, fetchOk, versionMatch, readsOk, placeId, apiBase) {
+    if !IsTelemetryEnabled()
+        return
     env := _TelemetryEnvelope()
     env["offset_health"] := Map(
         "roblox_version", robloxVersion,
@@ -84,10 +115,10 @@ _SendOffsetHealthNow(robloxVersion, fetchOk, versionMatch, readsOk, placeId, api
     try _TelemetryPost(env)
 }
 
-; Sent SYNCHRONOUSLY: on a successful update the app exits immediately after, so
-; an async dispatch would never run. The brief blocking cost is acceptable on
-; the (rare, one-shot) update path.
+; Best effort: exiting the app may cancel an outstanding telemetry request.
 SendUpdateTelemetry(fromVersion, toVersion, success, apiBase, errText) {
+    if !IsTelemetryEnabled()
+        return
     env := _TelemetryEnvelope()
     env["update"] := Map(
         "from_version", fromVersion,
@@ -109,24 +140,38 @@ _TelemetryEnvelope() {
     )
 }
 
-_TelemetryPost(payloadMap) {
-    global XTERNAL_API_BASES
-    body := JSON.stringify(payloadMap)
-    for _, base in XTERNAL_API_BASES {
-        try {
-            req := ComObject("WinHttp.WinHttpRequest.5.1")
-            req.SetTimeouts(5000, 5000, 5000, 8000)
-            req.Open("POST", base "/telemetry", false)
-            req.SetRequestHeader("User-Agent", "OpenMacro-XTernal Telemetry")
-            req.SetRequestHeader("Content-Type", "application/json")
-            req.Send(body)
-            if (req.Status >= 200 && req.Status < 300)
-                return true
-        } catch {
-            continue
-        }
+_TelemetryPost(payloadMap, baseIndex := 1) {
+    global XTERNAL_API_BASES, g_TelemetryRequest
+    ; Bound outstanding work: discard a new heartbeat while one is in flight.
+    if (!IsTelemetryEnabled() || g_TelemetryRequest || baseIndex > XTERNAL_API_BASES.Length)
+        return false
+    try {
+        req := WinHttpRequest()
+        req.SetTimeouts(5000, 5000, 5000, 8000)
+        req.Open("POST", XTERNAL_API_BASES[baseIndex] "/telemetry", true)
+        req.SetRequestHeader("User-Agent", "OpenMacro-XTernal Telemetry")
+        req.SetRequestHeader("Content-Type", "application/json")
+        req.OnResponseFinished := (self) => _TelemetryFinished(self, payloadMap, baseIndex)
+        req.OnError := (self, args*) => _TelemetryFinished(self, payloadMap, baseIndex, true)
+        g_TelemetryRequest := req
+        req.Send(JSON.stringify(payloadMap))
+        return true
+    } catch {
+        g_TelemetryRequest := 0
+        return _TelemetryPost(payloadMap, baseIndex + 1)
     }
-    return false
+}
+
+_TelemetryFinished(req, payload, baseIndex, failed := false) {
+    global g_TelemetryRequest
+    if (g_TelemetryRequest != req)
+        return
+    g_TelemetryRequest := 0
+    success := false
+    if !failed
+        try success := req.Status >= 200 && req.Status < 300
+    if !success
+        _TelemetryPost(payload, baseIndex + 1)
 }
 
 ; ── Anonymous identity ──────────────────────────────────────────────────────

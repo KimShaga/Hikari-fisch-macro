@@ -34,9 +34,7 @@ SaveSettingsFile() {
     global SETTINGS
 
     try {
-        file := FileOpen(APPDATA_DIR "\settings.json", "w")
-        file.Write(JSON.stringify(SETTINGS, 4))
-        file.Close()
+        _WriteSettingsFile(APPDATA_DIR "\settings.json", SETTINGS)
     } catch as err {
         MsgBox("설정 저장 실패: " err.Message, "설정 오류")
     }
@@ -84,7 +82,7 @@ ValidateAndSaveMain(key, ctrl, minValue, maxValue, isInteger := false, decimals 
     ctrl.Value := FormatSettingValue(numericValue, isInteger, decimals)
 
     if (key = "update_rate")
-        SetTimer(() => MacroLoop(), MAIN["update_rate"])
+        SetTimer(MacroLoop, MAIN["update_rate"])
 
     SaveSettingsFile()
 }
@@ -112,9 +110,7 @@ SaveConfig(name, useDefaults := false) {
     data["config_version"] := CONFIG_SCHEMA_VERSION
 
     try {
-        file := FileOpen(CONFIGS_DIR "\" name ".json", "w")
-        file.Write(JSON.stringify(data, 4))
-        file.Close()
+        _WriteSettingsFile(CONFIGS_DIR "\" name ".json", data)
     } catch as err {
         MsgBox("설정값 저장 실패: " err.Message, "설정값 오류")
     }
@@ -215,9 +211,7 @@ MigrateAllConfigs() {
             }
 
             if (changed) {
-                file := FileOpen(A_LoopFileFullPath, "w")
-                file.Write(JSON.stringify(configMap, 4))
-                file.Close()
+                _WriteSettingsFile(A_LoopFileFullPath, configMap)
             }
         } catch {
         }
@@ -251,9 +245,7 @@ ImportConfigFile(path, name) {
     clean["config_version"] := CONFIG_SCHEMA_VERSION
 
     try {
-        file := FileOpen(CONFIGS_DIR "\" name ".json", "w")
-        file.Write(JSON.stringify(clean, 4))
-        file.Close()
+        _WriteSettingsFile(CONFIGS_DIR "\" name ".json", clean)
         return true
     } catch {
         return false

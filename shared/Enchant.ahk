@@ -1127,6 +1127,11 @@ ResumeFishingAfterAutoSovereignCharge() {
     global Macro
     EnsureGamepassInventoryClosed()
     Macro.cycleEnabled := true
+    ; Complete/FailEnchantCycle briefly sets cycleEnabled=false, which makes
+    ; UpdateMacroMouseTip tear down the "낚시 ON" tip — restore it on resume.
+    try StartMacroMouseTip("낚시 ON")
+    catch {
+    }
     try SelectHotbarSlot("1")
     catch {
     }
@@ -1137,7 +1142,10 @@ ResumeFishingAfterAutoSovereignCharge() {
 CompleteEnchantCycle(status) {
     global Macro
     resume := Macro.HasOwnProp("enchantResumeFishing") && Macro.enchantResumeFishing
-    Macro.cycleEnabled := false
+    ; Keep cycleEnabled when resuming fishing — flipping it false lets the
+    ; mouse-tip timer call StopMacroMouseTip and drop "낚시 ON".
+    if (!resume)
+        Macro.cycleEnabled := false
     Macro.phase := "DONE"
     Macro.enchantState := "DONE"
     EnsureGamepassInventoryClosed()
@@ -1154,7 +1162,8 @@ CompleteEnchantCycle(status) {
 FailEnchantCycle(message) {
     global Macro
     resume := Macro.HasOwnProp("enchantResumeFishing") && Macro.enchantResumeFishing
-    Macro.cycleEnabled := false
+    if (!resume)
+        Macro.cycleEnabled := false
     Macro.phase := "FAILED"
     Macro.enchantState := "FAILED"
     Macro.enchantLastError := message

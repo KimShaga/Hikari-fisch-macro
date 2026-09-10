@@ -1,10 +1,10 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Wipe personal AppData settings and pack a clean release zip.
+  Pack a release zip without modifying personal AppData settings.
 
 .DESCRIPTION
-  - Deletes %APPDATA%\OpenMacro\XTernal (settings, configs, dumps, install-id, …)
+  - Preserves all personal settings, configs and logs
   - Zips this project folder with fixed 1980-01-01 timestamps (no local metadata)
   - Output: sibling folder "Hikari's Edited Fisch Macro <version>.zip"
 #>
@@ -32,8 +32,6 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) {
 }
 $ZipPath = Join-Path $OutDir ("{0} {1}.zip" -f $FolderName, $Version)
 
-$AppDataDir = Join-Path $env:APPDATA "OpenMacro\XTernal"
-$OpenMacroParent = Join-Path $env:APPDATA "OpenMacro"
 $FixedTime = [datetime]::new(1980, 1, 1, 0, 0, 0, [DateTimeKind]::Unspecified)
 
 Write-Host "== Hikari release pack =="
@@ -41,20 +39,7 @@ Write-Host "Project : $ProjectRoot"
 Write-Host "Version : $Version"
 Write-Host "Output  : $ZipPath"
 
-if (-not $SkipWipe) {
-    if (Test-Path -LiteralPath $AppDataDir) {
-        Remove-Item -LiteralPath $AppDataDir -Recurse -Force
-        Write-Host "Wiped   : $AppDataDir"
-    } else {
-        Write-Host "Wiped   : (already empty) $AppDataDir"
-    }
-    if ((Test-Path -LiteralPath $OpenMacroParent) -and -not (Get-ChildItem -LiteralPath $OpenMacroParent -Force -ErrorAction SilentlyContinue)) {
-        Remove-Item -LiteralPath $OpenMacroParent -Force
-        Write-Host "Removed empty parent: $OpenMacroParent"
-    }
-} else {
-    Write-Host "Wiped   : skipped (-SkipWipe)"
-}
+Write-Host "Personal AppData settings are preserved."
 
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem

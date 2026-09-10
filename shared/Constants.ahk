@@ -184,7 +184,7 @@ ApplyFixedAppearance() {
 LoadSettings() {
     settingsPath := APPDATA_DIR "\settings.json"
 
-    if (!FileExist(settingsPath)) {
+    if (!FileExist(settingsPath) && !FileExist(settingsPath ".bak")) {
         defaults := GetDefaultSettings()
         defaults["auto_update_forced_on"] := true
         _WriteSettingsFile(settingsPath, defaults)
@@ -192,8 +192,7 @@ LoadSettings() {
     }
 
     try {
-        jsonData := FileRead(settingsPath)
-        settings := JSON.parse(jsonData)
+        settings := ReadSettingsWithRecovery(settingsPath)
         changed := false
 
         if (!settings.Has("custom_theme")) {
@@ -397,10 +396,12 @@ GetDefaultSettings() {
     defaults["user"] := Map(
         "auto_appraise_click_x", "",
         "auto_appraise_click_y", "",
+        "telemetry_enabled", 0,
         "dark_mode", 1,
         "minimize_on_macro", 1,
         "reel_debug_enabled", 0,
         "reel_debug_log", 0,
+        "stellarwave_log", 0,
         "lullaby_fishing", 0
     )
 
@@ -758,7 +759,7 @@ NormalizeUserSettings(userSettings) {
         }
     }
 
-    for _, key in ["reel_debug_enabled", "reel_debug_log", "lullaby_fishing"] {
+    for _, key in ["reel_debug_enabled", "reel_debug_log", "stellarwave_log", "lullaby_fishing"] {
         if (!userSettings.Has(key)) {
             userSettings[key] := 0
             changed := true
@@ -774,18 +775,78 @@ NormalizeUserSettings(userSettings) {
     return changed
 }
 
-_WriteSettingsFile(path, data) {
+; Stage and flush before replacing the live file on the same volume.
+_WriteSettingsFile(path, data, keepBackup := true) {
     dir := RegExReplace(path, "\\[^\\]+$")
-    if (!DirExist(dir))
+    if !DirExist(dir)
         DirCreate(dir)
-
+    static serial := 0
+    temp := path ".tmp-" DllCall("GetCurrentProcessId") "-" (++serial)
+    text := JSON.stringify(data, 4)
     try {
-        file := FileOpen(path, "w")
-        file.Write(JSON.stringify(data, 4))
-        file.Close()
-    } catch as err {
-        throw Error("Failed to write settings file: " err.Message)
+        file := FileOpen(temp, "w", "UTF-8-RAW")
+        try {
+            file.Write(text)
+            file.Read(0) ; flush AHK's write buffer before flushing the OS handle
+            if !DllCall("FlushFileBuffers", "Ptr", file.Handle)
+                throw OSError()
+        } finally {
+            file.Close()
+        }
+        if (keepBackup && FileExist(path)) {
+            validPrevious := false
+            try validPrevious := JSON.parse(FileRead(path)) is Map
+            if validPrevious
+                FileCopy(path, path ".bak", true)
+        }
+        if !DllCall("MoveFileExW", "Str", temp, "Str", path, "UInt", 0x9)
+            throw OSError()
+    } finally {
+        if FileExist(temp)
+            FileDelete(temp)
     }
+}
+
+ReadSettingsWithRecovery(path) {
+    for candidate in [path, path ".bak"] {
+        if !FileExist(candidate)
+            continue
+        try {
+            data := JSON.parse(FileRead(candidate))
+            if !(data is Map)
+                throw Error("Settings must be an object")
+            defaults := GetDefaultSettings()
+            for key, value in defaults {
+                if !data.Has(key)
+                    data[key] := (key = "user" || key = "webhook") ? Map() : value
+                else if (value is Map && !(data[key] is Map))
+                    throw Error("Invalid settings section: " key)
+                else if (value is Map) {
+                    for subkey, subvalue in value {
+                        ; Leave personal-key migration from main to LoadSettings.
+                        if (key != "user" && key != "webhook" && !(key = "hotkeys" && subkey = "stop_appraise") && !data[key].Has(subkey))
+                            data[key][subkey] := subvalue
+                    }
+                }
+            }
+        } catch {
+            continue
+        }
+        if (candidate != path) {
+            PreserveDamagedSettings(path)
+            _WriteSettingsFile(path, data, false)
+        }
+        return data
+    }
+    PreserveDamagedSettings(path)
+    data := GetDefaultSettings()
+    _WriteSettingsFile(path, data, false)
+    return data
+}
+
+PreserveDamagedSettings(path) {
+    if FileExist(path)
+        FileCopy(path, path ".corrupt-" A_Now "-" A_TickCount, false)
 }
 
 GetBuiltInThemes() {

@@ -213,8 +213,14 @@ MacroLoop() {
         StopWindowUseClicker()
 
     ; Idle: do not rewrite GUI controls ~50×/sec. Attach watcher already refreshes rod/climate.
-    if (Macro.phase = "OFF" && !Macro.cycleEnabled)
+    ; Also: once the user toggles off (cycleEnabled=false), never keep driving cast/reel
+    ; centering — previously only (OFF && !enabled) returned early, so a lingering
+    ; FISHING/CASTING phase still yanked the cursor to client center.
+    if (!Macro.cycleEnabled) {
+        if (Macro.phase = "DONE" || Macro.phase = "FAILED")
+            StopMacroCycle("OFF")
         return
+    }
 
     if (Macro.phase = "WINDOW") {
         ; Toggle turned off while running → stop immediately (do not relaunch).
@@ -345,9 +351,6 @@ StartMacroCycle() {
         }
     }
 
-    if (MaybeStartAutoSovereignChargeFromFishing())
-        return
-
     ; Rod change replaces the Controller instance; the OLD controller's Reset()
     ; is not called, so tear down anything it owns (e.g. Stellarwave's fast
     ; scanner SetTimer, which would otherwise keep firing on the stale object).
@@ -380,6 +383,12 @@ StartMacroCycle() {
     ; Mid-session start: already reeling / minigame → skip cast and join the catch.
     if (TrySyncIntoActiveCatchPhase())
         return
+
+    ; Finish an active catch before switching to a relic for auto-charge.
+    ; With no catch in progress, keep charging before the next cast.
+    if (MaybeStartAutoSovereignChargeFromFishing())
+        return
+
     InitializeCastCycle()
 }
 
@@ -920,6 +929,9 @@ UpdateCastingPhase() {
     if (!Macro.castStartedAt)
         Macro.castStartedAt := A_TickCount
 
+    ; HoldMouse() no-ops once LMB is down — keep re-centering every tick.
+    EnsureFishingCursorCentered()
+
     resolved := ResolvePowerBarPath()
     if (!resolved.bar) {
         Macro.powerPercent := "---"
@@ -927,6 +939,14 @@ UpdateCastingPhase() {
         ; Re-check catch UI every tick while power bar is missing.
         if (TrySyncIntoActiveCatchPhase())
             return
+
+        ; Past cast timeout with no bar: re-equip / recast (or stop). Do this
+        ; BEFORE the early SHAKE jump so rod-unequipped / missed-bar cases still
+        ; honor "타임아웃 시 재캐스트".
+        if ((A_TickCount - Macro.castStartedAt) >= Macro.castWaitTimeoutMs) {
+            HandleCastTimeout()
+            return
+        }
 
         ; No power bar for a while: likely already cast / waiting for bite.
         ; Sitting on LMB here is what "stuck on CASTING" feels like.
@@ -940,19 +960,6 @@ UpdateCastingPhase() {
         }
 
         HoldMouse()
-
-        if ((A_TickCount - Macro.castStartedAt) >= Macro.castWaitTimeoutMs) {
-            Macro.castTimeoutCount += 1
-            ; This should solve the problem of the macro stopping if a nuke is caught
-            ; No im not making an actual fix
-            if MAIN["cast_on_timeout"] {
-                EnsureRodEquipped()
-                StartMacroCycle()
-            } else {
-                StopMacroCycle("OFF")
-            }
-        }
-
         return
     }
 
@@ -970,10 +977,8 @@ UpdateCastingPhase() {
         return
     }
 
-    if ((A_TickCount - Macro.castStartedAt) >= Macro.castWaitTimeoutMs) {
-        Macro.castTimeoutCount += 1
-        MAIN["cast_on_timeout"] ? StartMacroCycle() : StopMacroCycle("OFF")
-    }
+    if ((A_TickCount - Macro.castStartedAt) >= Macro.castWaitTimeoutMs)
+        HandleCastTimeout()
 }
 
 UpdateCastedPhase() {
@@ -997,7 +1002,7 @@ UpdateCastedPhase() {
 }
 
 UpdateShakePhase() {
-    global Macro
+    global Macro, MAIN
 
     Macro.powerPercent := ""
     Macro.progressPercent := ""
@@ -1011,8 +1016,40 @@ UpdateShakePhase() {
         Macro.lastShakedAt := A_TickCount
     }
 
+    ; Primary no-bite timeout path (cast bar wait also uses HandleCastTimeout).
     if (Macro.castReleasedAt && (A_TickCount - Macro.castReleasedAt) >= Macro.castWaitTimeoutMs)
+        HandleCastTimeout()
+}
+
+; Shared cast / shake timeout: count, then recast (with rod re-equip) or stop.
+HandleCastTimeout() {
+    global Macro, MAIN
+
+    if !Macro.cycleEnabled
+        return
+    ReleaseMouse(true)
+    ReleaseRightMouse(true)
+    Macro.castTimeoutCount += 1
+    if (MAIN["cast_on_timeout"]) {
+        ; Force unequip→equip so cast state resets, and verify the rod is back
+        ; in hand (blind hotbar toggle previously put it away and never re-drew).
+        equipped := EnsureRodEquipped(true)
+        ; Hotkeys can interrupt the re-equip sleeps. Never restart after stop.
+        if !Macro.cycleEnabled
+            return
+        if !equipped {
+            ; Keep the current wait phase and retry after another timeout.
+            Macro.castStartedAt := A_TickCount
+            Macro.castReleasedAt := A_TickCount
+            Macro.lastShakedAt := A_TickCount
+            UpdateMacroStatus("재캐스팅: 낚싯대 재장착 대기", "---", "---")
+            return
+        }
         StartMacroCycle()
+    } else {
+        Macro.cycleEnabled := false
+        StopMacroCycle("OFF")
+    }
 }
 
 ; Reset runtime flags shared by FISHING / LULLABY / BELLONA / TRANQUILITY entry.
@@ -1064,7 +1101,7 @@ TrySyncIntoActiveCatchPhase() {
         return true
     }
 
-    if (IsLullabyRodText(ROD) && (IsMetronomeActive() || HasActiveFishingContext() || IsReelGuiVisible())) {
+    if (IsLullabyRodText(ROD) && (IsMetronomeActive() || (IsReelGuiVisible() && HasActiveFishingContext()))) {
         ReleaseMouse()
         ReleaseRightMouse()
         PrepareCatchPhaseEntry()
@@ -1073,7 +1110,7 @@ TrySyncIntoActiveCatchPhase() {
     }
 
     if (IsBellonaRodText(ROD)) {
-        if (HasActiveBellonaContext() || HasActiveFishingContext() || IsReelGuiVisible()) {
+        if (HasActiveBellonaContext() || (IsReelGuiVisible() && HasActiveFishingContext())) {
             ReleaseMouse()
             ReleaseRightMouse()
             PrepareCatchPhaseEntry()
@@ -1083,7 +1120,10 @@ TrySyncIntoActiveCatchPhase() {
         return false
     }
 
-    if (HasActiveFishingContext() || IsReelGuiVisible()) {
+    ; Require BOTH visible reel and fish/playerbar. Visible-only OR cached
+    ; children-on-disabled-GUI used to yank SHAKE into FISHING and block the
+    ; cast-timeout recast path forever.
+    if (IsReelGuiVisible() && HasActiveFishingContext()) {
         ReleaseMouse()
         ReleaseRightMouse()
         PrepareCatchPhaseEntry()
@@ -1109,6 +1149,16 @@ UpdateFishingPhase() {
         Macro.completionReached := true
 
     if (Macro.completionReached) {
+        ; Stellarwave often hits completion % while the zodiac row still has
+        ; 1–2 signs left (esp. 11/12). Reset()+early return used to kill the
+        ; gimmick mid-row (gimmick_reset right after idx=11 in the log).
+        swGimmick := (Controller is StellarwaveController) && IsStellarwaveGimmickVisible(ctx)
+        if (swGimmick) {
+            Macro.fishingLostAt := 0
+            Controller.Update(ctx)
+            return
+        }
+
         ReleaseMouse(true)
         Controller.Reset()
 
@@ -1120,17 +1170,16 @@ UpdateFishingPhase() {
         ctx := 0
     }
 
-    if (ctx) {
+    if (ctx && HasActiveFishingContext(ctx)) {
         Macro.fishingLostAt := 0
 
-        if (HasActiveFishingContext(ctx)) {
-            EnsureFishingCursorCentered()
-            Controller.Update(ctx)
-        } else
-            ReleaseMouse()
+        EnsureFishingCursorCentered()
+        Controller.Update(ctx)
         return
     }
 
+    ; Reel ScreenGui up but fish/playerbar not ready: do not spin forever
+    ; (that blocked cast-timeout recast when TrySync jumped here early).
     ReleaseMouse()
     Controller.Reset()
 
@@ -1269,17 +1318,16 @@ UpdateLullabyPhase() {
         ctx := 0
     }
 
-    if (ctx || metronomeActive) {
+    if (ctx && HasActiveFishingContext(ctx)) {
         Macro.fishingLostAt := 0
-
-        if (ctx && HasActiveFishingContext(ctx)) {
-            EnsureFishingCursorCentered()
-            Controller.Update(ctx)
-        } else if (metronomeActive) {
-            EnsureFishingCursorCentered()
-            Controller.Update()
-        } else
-            ReleaseMouse()
+        EnsureFishingCursorCentered()
+        Controller.Update(ctx)
+        return
+    }
+    if (metronomeActive) {
+        Macro.fishingLostAt := 0
+        EnsureFishingCursorCentered()
+        Controller.Update()
         return
     }
 
@@ -1325,8 +1373,10 @@ EffectiveFishingActionDelayMs() {
 }
 
 HoldMouse() {
-    global Macro
+    global Macro, Controller
 
+    if (!IsSet(Macro) || !Macro.cycleEnabled)
+        return
     if (Macro.isHolding)
         return
 
@@ -1334,9 +1384,14 @@ HoldMouse() {
     if ((Macro.phase = "FISHING" || Macro.phase = "LULLABY") && delay > 0 && Macro.lastActionAt && (A_TickCount - Macro.lastActionAt) < delay)
         return
 
-    ; Click & Hold Anywhere — keep cursor at client center for stable holds.
-    if (Macro.phase = "FISHING" || Macro.phase = "LULLABY" || Macro.phase = "BELLONA")
-        MoveMouseToRobloxClientCenter()
+    ; Stellarwave gimmick owns the cursor — don't yank to center / refocus mid-chain.
+    swGimmick := IsSet(Controller) && (Controller is StellarwaveController) && Controller._swGimmickLive
+
+    if (!swGimmick && (Macro.phase = "CASTING" || Macro.phase = "FISHING" || Macro.phase = "LULLABY" || Macro.phase = "BELLONA")) {
+        FocusRobloxWindow()
+        if (!MoveMouseToRobloxClientCenter(true) && !IsMouseInRobloxClient())
+            return
+    }
 
     Send("{LButton down}")
     Macro.isHolding := true
@@ -1400,10 +1455,18 @@ ReleaseAllFishingMouse(force := false) {
     ReleaseRightMouse(force)
 }
 
-; Keep the cursor at the Roblox client center during reel holds ("Click & Hold Anywhere").
-; Throttled; skips if already near center unless force=true (e.g. after a UI click).
+; Keep the cursor at the Roblox client center during reel/cast holds
+; ("Click & Hold Anywhere"). Throttled; skips if already near center unless
+; force=true (e.g. after a UI click). Always uses Screen coords — without that,
+; MouseMove treats client-screen numbers as window-relative and can land on the
+; taskbar / wrong monitor.
 MoveMouseToRobloxClientCenter(force := false) {
+    global Macro
     static lastMovedAt := 0
+
+    ; Hard stop when macro is off — Stellarwave/HoldMouse paths must not yank cursor.
+    if (IsSet(Macro) && Macro && Macro.HasOwnProp("cycleEnabled") && !Macro.cycleEnabled)
+        return false
 
     if (!force && lastMovedAt && (A_TickCount - lastMovedAt) < 90)
         return false
@@ -1417,29 +1480,55 @@ MoveMouseToRobloxClientCenter(force := false) {
     cx := Round(left + w / 2)
     cy := Round(top + h / 2)
 
-    if (!force) {
-        try {
-            MouseGetPos(&mx, &my)
-            if (Abs(mx - cx) <= 4 && Abs(my - cy) <= 4) {
-                lastMovedAt := A_TickCount
-                return false
+    prev := A_CoordModeMouse
+    CoordMode("Mouse", "Screen")
+    try {
+        if (!force) {
+            try {
+                MouseGetPos(&mx, &my)
+                if (Abs(mx - cx) <= 4 && Abs(my - cy) <= 4) {
+                    lastMovedAt := A_TickCount
+                    return false
+                }
+            } catch {
             }
-        } catch {
         }
-    }
 
-    try MouseMove(cx, cy, 0)
-    catch {
-        return false
+        try MouseMove(cx, cy, 0)
+        catch {
+            return false
+        }
+    } finally {
+        CoordMode("Mouse", prev)
     }
     lastMovedAt := A_TickCount
     return true
 }
 
-; While reeling, snap cursor back to center between special clicks (signs, etc.).
+IsMouseInRobloxClient() {
+    left := 0, top := 0, w := 0, h := 0
+    if !GetRobloxClientScreenRect(&left, &top, &w, &h)
+        return false
+    prev := A_CoordModeMouse
+    CoordMode("Mouse", "Screen")
+    try {
+        MouseGetPos(&mx, &my)
+    } catch {
+        CoordMode("Mouse", prev)
+        return false
+    }
+    CoordMode("Mouse", prev)
+    return (mx >= left && my >= top && mx < left + w && my < top + h)
+}
+
+; Keep cursor at Roblox client center during cast hold / reel ("Click & Hold Anywhere").
 EnsureFishingCursorCentered() {
-    global Macro
-    if !(Macro.phase = "FISHING" || Macro.phase = "LULLABY" || Macro.phase = "BELLONA")
+    global Macro, Controller
+    if (!IsSet(Macro) || !Macro || !Macro.cycleEnabled)
+        return
+    if !(Macro.phase = "CASTING" || Macro.phase = "FISHING" || Macro.phase = "LULLABY" || Macro.phase = "BELLONA")
+        return
+    if (IsSet(Controller) && (Controller is StellarwaveController) && Controller._swGimmickLive)
         return
     MoveMouseToRobloxClientCenter()
 }
@@ -1962,7 +2051,7 @@ GetReelBarContext() {
     global Macro
 
     reelGui := GetReelGui()
-    if (!reelGui) {
+    if (!reelGui || !IsReelGuiVisible(reelGui)) {
         Macro.reelBarAddr := 0
         Macro.fishAddr := 0
         Macro.playerbarAddr := 0
@@ -4015,6 +4104,64 @@ class HalibutHarpoonController extends FishingController {
     }
 }
 
+; ── Stellarwave Melody file log ────────────────────────────────────────────
+global STELLARWAVE_LOG_PATH := ""
+
+IsStellarwaveLogEnabled() {
+    global USERPREFS
+    return IsSet(USERPREFS) && USERPREFS.Has("stellarwave_log") && USERPREFS["stellarwave_log"]
+}
+
+GetStellarwaveLogPath() {
+    global APPDATA_DIR, STELLARWAVE_LOG_PATH
+    if (STELLARWAVE_LOG_PATH = "")
+        STELLARWAVE_LOG_PATH := APPDATA_DIR "\stellarwave.log"
+    return STELLARWAVE_LOG_PATH
+}
+
+OpenStellarwaveLogFolder(*) {
+    global APPDATA_DIR
+    if !DirExist(APPDATA_DIR)
+        DirCreate(APPDATA_DIR)
+    path := GetStellarwaveLogPath()
+    if !FileExist(path)
+        FileAppend("stellarwave log`r`n", path, "UTF-8")
+    Run('explorer.exe /select,"' path '"')
+}
+
+; event = short tag; detail = free-form key=value bits (already formatted).
+LogStellarwave(event, detail := "") {
+    static lastEvent := "", lastDetail := "", lastAt := 0
+    if !IsStellarwaveLogEnabled()
+        return
+
+    ; Throttle identical miss/wait spam while waiting for GUI to catch up.
+    now := A_TickCount
+    if (event = "wait_fill" && lastEvent = "wait_fill" && lastAt && (now - lastAt) < 500)
+        return
+    if ((event = "bottom_miss" || event = "map_miss" || event = "idx_block" || event = "empty_tops")
+        && event = lastEvent && lastAt && (now - lastAt) < 500)
+        return
+    lastEvent := event
+    lastDetail := detail
+    lastAt := now
+
+    try {
+        path := GetStellarwaveLogPath()
+        ; Huge logs make FileAppend so slow the gimmick misses bottoms entirely.
+        if ((event = "bottom_miss" || event = "wait_fill" || event = "map_miss")
+            && FileExist(path) && FileGetSize(path) > 4 * 1024 * 1024)
+            return
+        ts := FormatTime(, "yyyy-MM-dd HH:mm:ss") "." Format("{:03}", Mod(A_TickCount, 1000))
+        line := ts "`t" event
+        if (detail != "")
+            line .= "`t" detail
+        line .= "`r`n"
+        FileAppend(line, path, "UTF-8")
+    } catch {
+    }
+}
+
 ; ── Stellarwave Melody: fixed top zodiac row → click matching bottom signs ──
 ; reel/Folder/signbar  (top, fixed L→R)  +  reel/bar/signContainer/sign1..12
 ; Top and bottom use different ImageIds for the same constellation — map required.
@@ -4192,6 +4339,42 @@ CountStellarwaveFilledStars(tops) {
     return n
 }
 
+; How far the round has advanced: leading tops whose mapped bottom is gone.
+; IMPORTANT: when the bottom row is empty (UI flicker / mid-deal), return 0 —
+; do NOT treat "no bottoms" as "all 12 done" (that falsely ended rounds mid-catch).
+CountStellarwaveBottomProgress(tops, bottoms, pairMap) {
+    if (!(bottoms is Map) || bottoms.Count < 1)
+        return 0
+    n := 0
+    for t in tops {
+        bottomImg := pairMap.Has(t.img) ? pairMap[t.img] : ""
+        if (bottomImg = "")
+            break
+        if (bottoms.Has(bottomImg))
+            break
+        n += 1
+    }
+    return n
+}
+
+; Stable L→R signature of the top row — changes when the game deals a new round.
+StellarwaveTopFingerprint(tops) {
+    parts := []
+    for t in tops
+        parts.Push(t.img)
+    return parts.Length ? StrJoin(parts, "|") : ""
+}
+
+StrJoin(arr, sep := "") {
+    out := ""
+    for i, v in arr {
+        if (i > 1)
+            out .= sep
+        out .= v
+    }
+    return out
+}
+
 ; Map bottomImageId → TextButton addr (remaining signN only — completed ones are removed)
 CollectStellarwaveBottomButtons(signContainer) {
     out := Map()
@@ -4232,9 +4415,9 @@ CollectStellarwaveBottomButtons(signContainer) {
 ; Click next unfilled top→bottom pair. Progress comes from star fill GUI — never
 ; reset mid-gimmick just because the UI flickered or a sign slot disappeared.
 ;
-; Guard order matters for latency: check fill/pending FIRST so we can click the
-; instant the game acknowledges the previous click. `CLICK_COOLDOWN_MS` is only
-; an anti-double-fire safety window; it does not throttle the actual chain.
+; After a full row is filled the game resets and deals another round in the same
+; catch. Detect that via fill drop, top-row fingerprint change, or bottom buttons
+; disappearing then coming back — sticky "all filled" must not trap us forever.
 ;
 ; Called from both the main MacroLoop tick and the fast scanner timer. A static
 ; `_busy` reentrancy guard prevents the two paths from double-clicking each
@@ -4258,116 +4441,263 @@ TryClickStellarwaveNextSign(controller, ctx := "") {
 _TryClickStellarwaveNextSignInner(controller, ctx := "") {
     global Macro
 
-    if (!IsStellarwaveGimmickVisible(ctx))
+    if (!IsStellarwaveGimmickVisible(ctx)) {
+        if (controller.swAwaitingRoundReset)
+            controller.swSawEmptyBottoms := true
         return false
+    }
 
     reelGui := GetReelGui()
     signbar := GetStellarwaveSignbar(reelGui)
     barAddr := (ctx && ctx.HasOwnProp("bar") && ctx.bar) ? ctx.bar : 0
     container := GetStellarwaveSignContainer(barAddr)
     tops := CollectStellarwaveTopSigns(signbar)
-    if (tops.Length < 1)
-        return false
-
-    filled := CountStellarwaveFilledStars(tops)
-    controller.swFilled := filled
-    if (filled >= tops.Length) {
-        controller.swDone := true
+    if (tops.Length < 1) {
+        LogStellarwave("empty_tops",
+            "awaiting=" (controller.swAwaitingRoundReset ? 1 : 0)
+            . " pending=" controller.swPendingFill
+            . " sticky=" (controller.swIgnoreStickyFills ? 1 : 0))
         return false
     }
 
-    ; Fill-driven advancement: only guard is "the game hasn't confirmed the
-    ; previous click yet". No time-based cooldown — as soon as fill increments
-    ; we can fire again.
-    if (controller.swPendingFill > 0) {
+    bottoms := CollectStellarwaveBottomButtons(container)
+    bottomCount := 0
+    for _ in bottoms
+        bottomCount += 1
+
+    pairMap := GetStellarwaveTopToBottomMap()
+    filled := CountStellarwaveFilledStars(tops)
+    bottomProg := CountStellarwaveBottomProgress(tops, bottoms, pairMap)
+    fp := StellarwaveTopFingerprint(tops)
+
+    ; Sticky mode must survive fill flicker while bottoms are empty. Only leave
+    ; sticky when a real new row is present (fills cleared AND bottoms spawning).
+    if (controller.swIgnoreStickyFills) {
+        if (filled < tops.Length && bottomCount > 0) {
+            controller.swIgnoreStickyFills := false
+            effectiveFilled := filled
+        } else {
+            effectiveFilled := controller.swRoundClicks
+        }
+    } else {
+        effectiveFilled := filled
+        if (bottomCount > 0 && bottomProg > effectiveFilled)
+            effectiveFilled := bottomProg
+    }
+    controller.swFilled := effectiveFilled
+
+    ; --- Round-reset detection (same catch, new zodiac deal) ---
+    if (controller.swAwaitingRoundReset) {
+        if (bottomCount = 0)
+            controller.swSawEmptyBottoms := true
+
+        newRound := false
+        if (filled < tops.Length && bottomCount > 0)
+            newRound := true
+        else if (fp != "" && controller.swCompletedFingerprint != "" && fp != controller.swCompletedFingerprint)
+            newRound := true
+        else if (controller.swSawEmptyBottoms && bottomCount > 0)
+            newRound := true
+
+        if (!newRound)
+            return false
+
+        ; Give the game a beat after clearing a full circle before we start the next.
+        if (controller.swRoundPauseUntil && (A_TickCount < controller.swRoundPauseUntil))
+            return false
+
+        stickyFull := (filled >= tops.Length)
+        controller.ClearGimmickProgress()
+        controller.swRoundPauseUntil := 0
+        ; Next circle start — park cursor at client center once.
+        _StellarwaveCacheSafePos(controller)
+        MoveMouseToRobloxClientCenter(true)
+        LogStellarwave("round_start",
+            "sticky=" (stickyFull ? 1 : 0)
+            . " filled=" filled
+            . " bottoms=" bottomCount
+            . " fp=" fp)
+        if (stickyFull) {
+            controller.swIgnoreStickyFills := true
+            controller.swRoundClicks := 0
+            effectiveFilled := 0
+        } else {
+            effectiveFilled := filled
+        }
+        controller.swFilled := effectiveFilled
+    }
+
+    ; Only a FULL star row (or sticky click-count) ends a circle.
+    ; Never end just because bottoms flickered to 0.
+    roundComplete := false
+    if (!controller.swIgnoreStickyFills && filled >= tops.Length)
+        roundComplete := true
+    else if (controller.swIgnoreStickyFills && controller.swRoundClicks >= tops.Length)
+        roundComplete := true
+
+    if (roundComplete) {
+        if (!controller.swAwaitingRoundReset) {
+            controller.swRoundPauseUntil := A_TickCount + StellarwaveController.ROUND_PAUSE_MS
+            ; Circle end — snap to center for the pause / reel handoff.
+            _StellarwaveCacheSafePos(controller)
+            MoveMouseToRobloxClientCenter(true)
+            LogStellarwave("round_complete",
+                "filled=" filled
+                . " bottomProg=" bottomProg
+                . " effective=" effectiveFilled
+                . " bottoms=" bottomCount
+                . " tops=" tops.Length
+                . " pauseMs=" StellarwaveController.ROUND_PAUSE_MS
+                . " stickyClicks=" controller.swRoundClicks
+                . " fp=" fp)
+        }
+        controller.swAwaitingRoundReset := true
+        controller.swCompletedFingerprint := fp
+        controller.swPendingFill := 0
+        controller.swDone := false
+        if (bottomCount = 0)
+            controller.swSawEmptyBottoms := true
+        return false
+    }
+
+    ; Non-sticky: wait for star-fill ack. Sticky: click-count already advanced.
+    if (!controller.swIgnoreStickyFills && controller.swPendingFill > 0) {
         if (filled >= controller.swPendingFill) {
             controller.swPendingFill := 0
         } else if ((A_TickCount - controller.swLastClickAt) < StellarwaveController.FILL_WAIT_MS) {
+            LogStellarwave("wait_fill",
+                "pending=" controller.swPendingFill
+                . " filled=" filled
+                . " waited=" (A_TickCount - controller.swLastClickAt)
+                . " bottoms=" bottomCount)
             return false
         } else {
-            ; Timed out waiting for fill — retry same target from GUI state.
+            LogStellarwave("fill_timeout",
+                "pending=" controller.swPendingFill
+                . " filled=" filled
+                . " waited=" (A_TickCount - controller.swLastClickAt)
+                . " bottoms=" bottomCount)
             controller.swPendingFill := 0
         }
     }
 
-    ; Optional anti-double-fire safety window. Set to 0 for "throw stability
-    ; away" mode; every click still gates on the pending-fill check above.
     if (StellarwaveController.CLICK_COOLDOWN_MS > 0
         && (A_TickCount - controller.swLastClickAt) < StellarwaveController.CLICK_COOLDOWN_MS)
         return false
 
-    nextIdx := filled + 1  ; 1-based into tops
+    nextIdx := effectiveFilled + 1
+    if (nextIdx < 1 || nextIdx > tops.Length) {
+        LogStellarwave("idx_block",
+            "nextIdx=" nextIdx
+            . " effective=" effectiveFilled
+            . " filled=" filled
+            . " sticky=" (controller.swIgnoreStickyFills ? 1 : 0)
+            . " clicks=" controller.swRoundClicks
+            . " tops=" tops.Length)
+        return false
+    }
     top := tops[nextIdx]
-    if (top.filled)
+    if (top.filled && !controller.swIgnoreStickyFills)
         return false
-
-    bottoms := CollectStellarwaveBottomButtons(container)
-    pairMap := GetStellarwaveTopToBottomMap()
     bottomImg := pairMap.Has(top.img) ? pairMap[top.img] : ""
-    if (bottomImg = "" || !bottoms.Has(bottomImg))
+    if (bottomImg = "") {
+        LogStellarwave("map_miss", "idx=" nextIdx " topImg=" top.img)
         return false
+    }
+    if (!bottoms.Has(bottomImg)) {
+        LogStellarwave("bottom_miss",
+            "idx=" nextIdx
+            . " topImg=" top.img
+            . " bottomImg=" bottomImg
+            . " bottoms=" bottomCount
+            . " effective=" effectiveFilled
+            . " sticky=" (controller.swIgnoreStickyFills ? 1 : 0))
+        return false
+    }
 
     btn := bottoms[bottomImg]
 
-    ; Release the reel-hold before firing the click. A 3 ms yield gives
-    ; Roblox one message-loop pass to process the LButton up before our
-    ; synthesized down/up arrives; without it the game often loses the click.
     if (Macro.isHolding) {
         Send("{LButton up}")
         Macro.isHolding := false
-        Sleep(3)
     }
 
     ok := _StellarwaveFastClick(controller, btn)
     controller.swLastClickAt := A_TickCount
     if (ok) {
-        controller.swPendingFill := filled + 1
+        if (controller.swIgnoreStickyFills) {
+            controller.swRoundClicks := nextIdx
+            controller.swPendingFill := 0
+        } else {
+            controller.swPendingFill := nextIdx
+        }
         controller.swDone := false
+        controller.swAwaitingRoundReset := false
         controller._dbgSwNext := nextIdx
         controller._dbgSwTarget := bottomImg
-        controller._dbgSwFilled := filled
+        controller._dbgSwFilled := effectiveFilled
+        LogStellarwave("click",
+            "idx=" nextIdx
+            . "/" tops.Length
+            . " topImg=" top.img
+            . " bottomImg=" bottomImg
+            . " filled=" filled
+            . " bottomProg=" bottomProg
+            . " effective=" effectiveFilled
+            . " bottoms=" bottomCount
+            . " sticky=" (controller.swIgnoreStickyFills ? 1 : 0)
+            . " clicks=" controller.swRoundClicks
+            . " pending=" controller.swPendingFill)
+    } else {
+        LogStellarwave("click_fail",
+            "idx=" nextIdx
+            . " topImg=" top.img
+            . " bottomImg=" bottomImg)
     }
     return ok
 }
 
-; Ultra-fast click for a Roblox GUI button. Cuts all sleeps but keeps the tiny
-; 1-pixel wiggle Roblox uses to trigger hover state — without it TextButtons
-; often ignore synthetic clicks that never "moved" into them.
-;
-; After the click we snap the cursor back to the cached Roblox client center so
-; the reel PID's next `Hold` doesn't accidentally press the button we just hit.
+; Lean click: short hover wiggle + Click. Cursor stays near the sign row between
+; clicks (no center snap) so the chain does not hitch on long mouse travel.
 _StellarwaveFastClick(controller, btn) {
     if (!btn)
-        return false
-    rect := ReadAbsoluteRect(btn)
-    if (rect.w <= 1 || rect.h <= 1)
         return false
 
     pos := GuiCenterToScreen(btn)
     if (!IsObject(pos))
         return false
 
+    x := Round(pos.x)
+    y := Round(pos.y)
+
     if (!controller._swSafeX)
         _StellarwaveCacheSafePos(controller)
 
-    ; Focus is cheap and prevents clicks landing on stray foreground windows
-    ; if something (an AHK GUI, tooltip, etc.) briefly stole focus.
-    FocusRobloxWindow()
+    hwnd := GetRobloxGameHwnd()
+    if (hwnd) {
+        try {
+            if !WinActive("ahk_id " hwnd)
+                FocusRobloxWindow()
+        } catch {
+        }
+    }
+
+    wiggle := Max(1, StellarwaveController.CLICK_WIGGLE_PX)
+    step := Max(0, Round(StellarwaveController.CLICK_STEP_MS))
 
     prev := A_CoordModeMouse
     CoordMode("Mouse", "Screen")
     try {
-        ; Tuned via StellarwaveController.CLICK_WIGGLE_PX / CLICK_STEP_MS.
-        ; Roblox needs the wiggle motion to span at least one input sample
-        ; (~16 ms at 60 Hz) or the TextButton drops the click.
-        ReliableScreenClick(
-            pos.x, pos.y,
-            StellarwaveController.CLICK_WIGGLE_PX,
-            StellarwaveController.CLICK_STEP_MS
-        )
-
-        if (controller._swSafeX)
-            MouseMove(controller._swSafeX, controller._swSafeY, 0)
+        MouseMove(x, y, 0)
+        if (step > 0)
+            Sleep(step)
+        MouseMove(x + wiggle, y, 0)
+        if (step > 0)
+            Sleep(step)
+        MouseMove(x, y, 0)
+        if (step > 0)
+            Sleep(step)
+        Click()
     } finally {
         CoordMode("Mouse", prev)
     }
@@ -4388,8 +4718,10 @@ _StellarwaveCacheSafePos(controller) {
 }
 
 ; Stellarwave Melody: solve zodiac sign gimmick, then normal reel PID.
-; Progress is owned by star fill GUI — do not clear until a new catch starts
-; (ClearGimmickProgress) or all 12 are done. Brief reel flicker must not rewind.
+; Progress is owned by star fill GUI. Mid-round flicker must not rewind.
+; When every star is filled the game resets and deals another round in the
+; same catch — clear and keep solving until the reel ends (or a new catch
+; calls ClearGimmickProgress).
 ;
 ; The gimmick runs a dedicated fast-poll SetTimer while the reel is active. It
 ; preempts the main MacroLoop tick during any Sleep, giving effective parallel
@@ -4397,25 +4729,34 @@ _StellarwaveCacheSafePos(controller) {
 ; fires the instant the previous fill lands, instead of waiting for the next
 ; ~21 ms MacroLoop tick.
 class StellarwaveController extends FishingController {
-    ; Anti-double-fire safety window between clicks (fill-driven advancement
-    ; still gates repeats — this is only a mouse-event overlap guard). 0 = off.
-    static CLICK_COOLDOWN_MS := 0
-    ; Max wait for a click to register as a filled star before we retry.
-    static FILL_WAIT_MS := 0
     ; Fast scanner poll cadence (ms). Preempts the main loop during Sleep.
-    static FAST_POLL_INTERVAL_MS := 0
-    ; Wiggle knobs for the sign click. Roblox samples raw input at ~60 Hz
-    ; (~16 ms), so wiggle motion must span long enough for the game to observe
-    ; the cursor "enter" event before the click fires. STEP_MS ≥ 3–5 in
-    ; practice; below that Roblox often skips the hover and eats the click.
-    ; Total per click ≈ 6 × STEP_MS ms.
+    ; AHK v2: SetTimer(..., 0) DELETES the timer — must be > 0.
+    static FAST_POLL_INTERVAL_MS := 1
+    ; Minimal hover wiggle so TextButtons register. step=0 = no Sleep between
+    ; moves (still 3 MouseMoves + Click).
     static CLICK_WIGGLE_PX := 1
-    static CLICK_STEP_MS := 0.5
+    ; Sleep between wiggle samples (~1 frame) so TextButtons see hover.
+    static CLICK_STEP_MS := 1
+    ; Gap after a click before another attempt is allowed.
+    static CLICK_COOLDOWN_MS := 1
+    ; Pause after finishing one full circle before starting the next deal.
+    static ROUND_PAUSE_MS := 0
+    ; Max wait for star-fill ack before retrying the same sign.
+    static FILL_WAIT_MS := 500
 
     swLastClickAt := 0
     swPendingFill := 0
     swFilled := 0
     swDone := false
+    ; True after a full row is filled, until the GUI clears / deals a new row.
+    swAwaitingRoundReset := false
+    swCompletedFingerprint := ""
+    swSawEmptyBottoms := false
+    swIgnoreStickyFills := false
+    swRoundClicks := 0
+    swRoundPauseUntil := 0
+    ; True while signbar/signContainer is up — cursor/reel-hold thrash suppressed.
+    _swGimmickLive := false
     _swTimerFn := 0
     _swTimerActive := false
     _swSafeX := 0
@@ -4423,8 +4764,18 @@ class StellarwaveController extends FishingController {
 
     Reset() {
         ; Only PID state — keep gimmick progress across brief reel/context loss.
+        ; PrepareCatchPhaseEntry also clears progress; live must drop here so the
+        ; next catch can emit gimmick_start (otherwise we miss the rising edge).
         super.Reset()
         this.StopFastScanner()
+        if (this._swGimmickLive) {
+            this._swGimmickLive := false
+            LogStellarwave("gimmick_reset",
+                "filled=" this.swFilled
+                . " pending=" this.swPendingFill
+                . " awaiting=" (this.swAwaitingRoundReset ? 1 : 0)
+                . " clicks=" this.swRoundClicks)
+        }
         this._swSafeX := 0
         this._swSafeY := 0
     }
@@ -4438,6 +4789,12 @@ class StellarwaveController extends FishingController {
         this.swPendingFill := 0
         this.swFilled := 0
         this.swDone := false
+        this.swAwaitingRoundReset := false
+        this.swCompletedFingerprint := ""
+        this.swSawEmptyBottoms := false
+        this.swIgnoreStickyFills := false
+        this.swRoundClicks := 0
+        this.swRoundPauseUntil := 0
         this._dbgSwNext := 0
         this._dbgSwTarget := ""
         this._dbgSwFilled := 0
@@ -4471,30 +4828,74 @@ class StellarwaveController extends FishingController {
                 this.StopFastScanner()
                 return
             }
-            if (this.swDone) {
-                this.StopFastScanner()
-                return
-            }
             TryClickStellarwaveNextSign(this)
         } catch {
         }
     }
 
     Update(ctx := "") {
+        global Macro
+
         if (ctx = "")
             ctx := GetReelBarContext()
 
-        ; Kick the parallel scanner while we're actively reeling — it will click
-        ; the next sign immediately when the game acknowledges the previous one.
-        if (!this.swDone)
-            this.StartFastScanner()
-        else
-            this.StopFastScanner()
+        this.StartFastScanner()
 
-        ; Also try once on this tick so we don't wait a full poll interval on
-        ; the very first click after entering the gimmick.
-        if (TryClickStellarwaveNextSign(this, ctx))
+        gimmick := IsStellarwaveGimmickVisible(ctx)
+        if (gimmick) {
+            if (!this._swGimmickLive) {
+                this._swGimmickLive := true
+                ; Re-entering the UI after flicker/catch: drop stale pending so we
+                ; don't sit forever in wait_fill from a previous deal. If we were
+                ; waiting for the next circle but fills already reset, abandon that
+                ; wait and start clean.
+                if (this.swAwaitingRoundReset) {
+                    try {
+                        topsProbe := CollectStellarwaveTopSigns(GetStellarwaveSignbar())
+                        filledProbe := CountStellarwaveFilledStars(topsProbe)
+                        ; Empty tops or cleared fills = previous circle wait is stale.
+                        if (topsProbe.Length < 1 || filledProbe < topsProbe.Length) {
+                            LogStellarwave("await_abandon",
+                                "filled=" filledProbe
+                                . " tops=" topsProbe.Length)
+                            this.ClearGimmickProgress()
+                        } else {
+                            this.swPendingFill := 0
+                        }
+                    } catch {
+                        this.ClearGimmickProgress()
+                    }
+                } else {
+                    this.swPendingFill := 0
+                    this.swLastClickAt := 0
+                }
+                _StellarwaveCacheSafePos(this)
+                MoveMouseToRobloxClientCenter(true)
+                LogStellarwave("gimmick_start",
+                    "pending=" this.swPendingFill
+                    . " awaiting=" (this.swAwaitingRoundReset ? 1 : 0)
+                    . " sticky=" (this.swIgnoreStickyFills ? 1 : 0)
+                    . " clicks=" this.swRoundClicks)
+            }
+            if (Macro.isHolding) {
+                Send("{LButton up}")
+                Macro.isHolding := false
+            }
+            TryClickStellarwaveNextSign(this, ctx)
             return
+        }
+
+        if (this._swGimmickLive) {
+            this._swGimmickLive := false
+            _StellarwaveCacheSafePos(this)
+            MoveMouseToRobloxClientCenter(true)
+            LogStellarwave("gimmick_end",
+                "filled=" this.swFilled
+                . " pending=" this.swPendingFill
+                . " awaitingReset=" (this.swAwaitingRoundReset ? 1 : 0)
+                . " sticky=" (this.swIgnoreStickyFills ? 1 : 0)
+                . " clicks=" this.swRoundClicks)
+        }
 
         super.Update(ctx)
     }

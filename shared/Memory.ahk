@@ -162,8 +162,58 @@ IsInFischGame() {
     return TryGetPlaceId() = FISCH_PLACE_ID
 }
 
+; Prefer GET /offsets/<running-hash>. /latest is only used when it is the same
+; build (or we cannot read a version hash, e.g. Microsoft Store). Applying a
+; newer latest blob onto an older client is what produced "아직 맞지 않음"
+; even after the matching hash was already published.
+ResolveRemoteOffsetsForRunningBuild() {
+    global RBLX_PID, g_AttachFailReason, g_BuildUnsupported, g_LastApiBase, g_LastHashOffsetsStatus
+
+    placeId := TryGetPlaceId()
+    runningHash := ""
+    try {
+        if (RBLX_PID)
+            runningHash := GetRunningRobloxVersionHash(RBLX_PID)
+    } catch {
+        runningHash := ""
+    }
+
+    if (runningHash != "") {
+        parsed := FetchRemoteOffsetsForHash(runningHash)
+        hashStatus := IsSet(g_LastHashOffsetsStatus) ? g_LastHashOffsetsStatus : 0
+
+        if (hashStatus = 200 && parsed) {
+            g_BuildUnsupported := false
+            return parsed
+        }
+
+        if (hashStatus = 404) {
+            g_BuildUnsupported := true
+            g_AttachFailReason := "offsets"
+            SendOffsetHealthTelemetry(runningHash, false, false, false, placeId, g_LastApiBase)
+            return ""
+        }
+    }
+
+    latest := FetchRemoteOffsets()
+    if (!latest) {
+        g_AttachFailReason := "api"
+        SendOffsetHealthTelemetry("", false, false, false, placeId, g_LastApiBase)
+        return ""
+    }
+
+    latestVer := ParsedOffsetsVersion(latest)
+    if (runningHash != "" && latestVer != "" && latestVer != runningHash) {
+        g_AttachFailReason := "offsets"
+        SendOffsetHealthTelemetry(latestVer, true, false, false, placeId, g_LastApiBase)
+        return ""
+    }
+
+    return latest
+}
+
 TestAndHealOffsets() {
-    global g_AttachFailReason
+    global g_AttachFailReason, g_BuildUnsupported
 
     ; The DataModel resolves even on the Roblox home screen, so a structural pass is
     ; NOT "in the game" -- also require PlaceId to read Fisch's id, which confirms
@@ -190,11 +240,15 @@ TestAndHealOffsets() {
         throw Error("아직 Fisch에 있지 않습니다. Fisch에 들어간 뒤 매크로를 시작하세요.")
     }
 
-    parsed := FetchRemoteOffsets()
+    parsed := ResolveRemoteOffsetsForRunningBuild()
     if (!parsed) {
-        g_AttachFailReason := "api"
-        SendOffsetHealthTelemetry("", false, false, false, placeId, g_LastApiBase)
-        throw Error("오프셋이 오래되었고 원격 업데이트에 연결할 수 없습니다. 온라인에서 다시 시도하거나 offsets.json을 수동으로 갱신하세요.")
+        ; ResolveRemoteOffsetsForRunningBuild already set g_AttachFailReason
+        ; (api / offsets / unpublished) and telemetry where it had enough context.
+        if (g_AttachFailReason = "api")
+            throw Error("오프셋이 오래되었고 원격 업데이트에 연결할 수 없습니다. 온라인에서 다시 시도하거나 offsets.json을 수동으로 갱신하세요.")
+        if (g_AttachFailReason = "offsets" && IsSet(g_BuildUnsupported) && g_BuildUnsupported)
+            throw Error("이 로블록스 빌드용 오프셋이 아직 게시되지 않았습니다. 게시되면 자동으로 다시 시도합니다.")
+        throw Error("원격 오프셋이 실행 중인 로블록스 빌드와 맞지 않습니다.")
     }
 
     try {
@@ -217,6 +271,7 @@ TestAndHealOffsets() {
     ; Offsets are healthy now, but a heal can also succeed at the menu / in another
     ; game -- gate "ready" on actually being in Fisch, same signal as the early out.
     g_AttachFailReason := ""
+    g_BuildUnsupported := false
     if (!IsInFischGame())
         throw Error("아직 Fisch에 있지 않습니다. Fisch에 들어간 뒤 매크로를 시작하세요.")
 
@@ -395,6 +450,11 @@ ReinitializeRobloxConnection() {
     _ConnectingSince := 0
     _HotbarInitAt := 0
     _LastAttachResetAt := A_TickCount
+    try InvalidateOffsetsFetchCache()
+    catch {
+    }
+    global _LastVersionCheckAt
+    _LastVersionCheckAt := 0
     try {
         try ClearMacroPhaseCache()
         catch {

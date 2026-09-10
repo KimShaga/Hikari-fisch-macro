@@ -7,7 +7,7 @@
     "AnimationTrack":{
       "Animation":184,
       "Animator":264,
-      "IsPlaying":2640,
+      "IsPlaying":2704,
       "Looped":229,
       "Speed":212,
       "TimePosition":216
@@ -102,13 +102,13 @@
     "DataModel":{
       "CreatorId":376,
       "GameId":384,
-      "GameLoaded":1472,
+      "GameLoaded":1392,
       "JobId":280,
       "PlaceId":392,
       "PlaceVersion":420,
-      "PrimitiveCount":1032,
+      "PrimitiveCount":952,
       "ScriptContext":1088,
-      "ServerIP":1448,
+      "ServerIP":1368,
       "ToRenderView1":448,
       "ToRenderView2":8,
       "ToRenderView3":40,
@@ -135,7 +135,7 @@
       "Responsiveness":704
     },
     "FakeDataModel":{
-      "Pointer":147072760,
+      "Pointer":146250584,
       "RealDataModel":472
     },
     "GuiBase2D":{
@@ -187,14 +187,14 @@
       "MoveToPoint":356,
       "NameDisplayDistance":432,
       "NameOcclusion":436,
-      "PlatformStand":476,
-      "PlatformStatePointer":2471424463,
+      "PlatformStand":197,
+      "PlatformStatePointer":2503922163,
       "RequiresNeck":477,
       "RigType":448,
       "SeatPart":264,
       "Sit":477,
       "TargetPoint":332,
-      "UseJumpPower":480,
+      "UseJumpPower":197,
       "WalkTimer":1032,
       "Walkspeed":464,
       "WalkspeedCheck":956
@@ -325,7 +325,7 @@
       "HealthDisplayDistance":916,
       "LocalPlayer":304,
       "LocaleId":280,
-      "MaxZoomDistance":349,
+      "MaxZoomDistance":872,
       "MinZoomDistance":876,
       "ModelInstance":664,
       "Mouse":4592,
@@ -380,8 +380,8 @@
       "VisualEngine":16
     },
     "RunService":{
-      "HeartbeatFPS":200,
-      "HeartbeatTask":224
+      "HeartbeatFPS":244,
+      "HeartbeatTask":952
     },
     "Script":{
       "ByteCode":0,
@@ -438,12 +438,12 @@
       "Spread":188
     },
     "SurfaceAppearance":{
-      "AlphaMode":496,
-      "Color":472,
+      "AlphaMode":656,
+      "Color":632,
       "ColorMap":200,
       "EmissiveMaskContent":248,
-      "EmissiveStrength":500,
-      "EmissiveTint":484,
+      "EmissiveStrength":660,
+      "EmissiveTint":644,
       "MetalnessMap":296,
       "NormalMap":344,
       "RoughnessMap":392
@@ -453,7 +453,7 @@
       "JobName":24,
       "JobStart":200,
       "MaxFPS":176,
-      "Pointer":144560392
+      "Pointer":143353032
     },
     "Team":{
       "BrickColor":184
@@ -496,7 +496,7 @@
     "VisualEngine":{
       "Dimensions":2784,
       "FakeDataModel":2752,
-      "Pointer":136830344,
+      "Pointer":135488040,
       "RenderView":3072,
       "ViewMatrix":384
     },
@@ -515,7 +515,7 @@
     "Workspace":{
       "CurrentCamera":1176,
       "DistributedGameTime":1208,
-      "ReadOnlyGravity":2504,
+      "ReadOnlyGravity":2496,
       "World":1008
     },
     "World":{
@@ -527,5 +527,5 @@
     }
   },
   "source":"https://offsets.imtheo.lol",
-  "version":"version-ce0bcd0fbd484804"
+  "version":"version-ddf602d9cfe44005"
 }

@@ -106,72 +106,80 @@ GetGui() {
     global BuffStatusText := mg.AddText("x20 y206 w400 h36 c" TextColor, FormatActiveBuffsDisplay())
     BuffStatusText.SetFont("s9")
 
-    mg.AddGroupBox("x10 y290 w425 h200 c" TextColor, "캐스팅").SetFont("s9 bold")
+    ; Keep the advanced controls alive so existing save/validation callbacks
+    ; retain their references when the window is hidden and reopened.
+    FishingSettingsGui := Gui("+Owner" mg.Hwnd " +AlwaysOnTop +Border", "고급 낚시 설정")
+    FishingSettingsGui.BackColor := "0x" BgColor
+    FishingSettingsGui.SetFont(, "Segoe UI")
+    FishingSettingsGui.OnEvent("Close", (*) => FishingSettingsGui.Hide())
+    FishingSettingsGui.OnEvent("Escape", (*) => FishingSettingsGui.Hide())
 
-    mg.AddText("x20 y310 w100 h20 c" TextColor, "캐스트 모드").SetFont("s10")
-    CastMode := mg.AddDDL("x305 y310 w110", ["퍼펙트", "숏", "사용자 지정"])
-    CastModeHelp := mg.AddText("x210 y310 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddGroupBox("x10 y30 w425 h200 c" TextColor, "캐스팅").SetFont("s9 bold")
+
+    FishingSettingsGui.AddText("x20 y50 w100 h20 c" TextColor, "캐스트 모드").SetFont("s10")
+    CastMode := FishingSettingsGui.AddDDL("x305 y50 w110", ["퍼펙트", "숏", "사용자 지정"])
+    CastModeHelp := FishingSettingsGui.AddText("x210 y50 w50 h20 c" Accent, "설명")
     CastModeHelp.SetFont("underline")
     CastModeHelp.OnEvent("Click", (*) => InfoPopup.Show("캐스트 모드", "캐스트를 놓는 목표 파워입니다. 퍼펙트는 풀 캐스트용 고정 고임계값, 숏은 빠른 캐스트용 저임계값, 사용자 지정은 직접 설정한 캐스트 파워 임계값을 사용합니다."))
 
-    mg.AddText("x20 y333 w150 h20 c" TextColor, "캐스트 파워 임계값").SetFont("s10")
-    CastPowerThreshold := mg.AddEdit("x305 y333 w110 h20")
-    CastPowerThresholdHelp := mg.AddText("x210 y333 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y73 w150 h20 c" TextColor, "캐스트 파워 임계값").SetFont("s10")
+    CastPowerThreshold := FishingSettingsGui.AddEdit("x305 y73 w110 h20")
+    CastPowerThresholdHelp := FishingSettingsGui.AddText("x210 y73 w50 h20 c" Accent, "설명")
     CastPowerThresholdHelp.SetFont("underline")
     CastPowerThresholdHelp.OnEvent("Click", (*) => InfoPopup.Show("캐스트 파워 임계값", "사용자 지정 캐스트 모드에서만 사용합니다. 캐스트 파워가 이 퍼센트에 도달할 때까지 좌클릭을 유지한 뒤 뗍니다. 높을수록 멀리, 낮을수록 빨리 던집니다."))
 
-    mg.AddText("x20 y356 w150 h20 c" TextColor, "캐스트 타임아웃").SetFont("s10")
-    CastTimeout := mg.AddEdit("x305 y356 w110 h20")
-    CastTimeoutHelp := mg.AddText("x210 y356 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y96 w150 h20 c" TextColor, "캐스트 타임아웃").SetFont("s10")
+    CastTimeout := FishingSettingsGui.AddEdit("x305 y96 w110 h20")
+    CastTimeoutHelp := FishingSettingsGui.AddText("x210 y96 w50 h20 c" Accent, "설명")
     CastTimeoutHelp.SetFont("underline")
     CastTimeoutHelp.OnEvent("Click", (*) => InfoPopup.Show("캐스트 타임아웃", "캐스트 시도를 포기하기까지 기다리는 시간입니다. 최소 5초입니다. 캐스트 바 대기와 해제 후 낚시 UI 대기에도 쓰입니다. 타임아웃 시 '타임아웃 시 재캐스트' 설정에 따라 재시도하거나 멈춥니다."))
 
-    mg.AddText("x20 y379 w150 h20 c" TextColor, "사이클 시작 딜레이").SetFont("s10")
-    PreCastDelay := mg.AddEdit("x305 y379 w110 h20")
-    PreCastDelayHelp := mg.AddText("x210 y379 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y119 w150 h20 c" TextColor, "사이클 시작 딜레이").SetFont("s10")
+    PreCastDelay := FishingSettingsGui.AddEdit("x305 y119 w110 h20")
+    PreCastDelayHelp := FishingSettingsGui.AddText("x210 y119 w50 h20 c" Accent, "설명")
     PreCastDelayHelp.SetFont("underline")
     PreCastDelayHelp.OnEvent("Click", (*) => InfoPopup.Show("사이클 시작 딜레이", "각 사이클 시작 후 캐스트 전 추가 대기입니다. 예약된 자동 토템/아이템도 핫바를 만지기 전에 이만큼 기다립니다."))
 
-    mg.AddText("x20 y402 w150 h20 c" TextColor, "캐스트 후 딜레이").SetFont("s10")
-    PostCastDelay := mg.AddEdit("x305 y402 w110 h20")
-    PostCastDelayHelp := mg.AddText("x210 y402 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y142 w150 h20 c" TextColor, "캐스트 후 딜레이").SetFont("s10")
+    PostCastDelay := FishingSettingsGui.AddEdit("x305 y142 w110 h20")
+    PostCastDelayHelp := FishingSettingsGui.AddText("x210 y142 w50 h20 c" Accent, "설명")
     PostCastDelayHelp.SetFont("underline")
     PostCastDelayHelp.OnEvent("Click", (*) => InfoPopup.Show("캐스트 후 딜레이", "캐스트를 놓은 뒤 흔들기 단계까지 대기입니다. 캐스트 해제와 훅/흔들기 사이에 여유가 필요하면 올리세요."))
 
-    Border(mg, 20, 427, 395, 1)
+    Border(FishingSettingsGui, 20, 167, 395, 1)
 
-    mg.AddText("x40 y438 w140 h20 c" TextColor, "타임아웃 시 재캐스트").SetFont("s10")
-    CastOnTimeout := mg.AddCheckbox("x20 y438 h20 w20")
-    SaveCastBtn := button(mg, "저장", 305, 435, {w: 110, h: 23, bg: BgColor, fontSize: 10})
+    FishingSettingsGui.AddText("x40 y178 w140 h20 c" TextColor, "타임아웃 시 재캐스트").SetFont("s10")
+    CastOnTimeout := FishingSettingsGui.AddCheckbox("x20 y178 h20 w20")
+    SaveCastBtn := button(FishingSettingsGui, "저장", 305, 175, {w: 110, h: 23, bg: BgColor, fontSize: 10})
 
-    mg.AddGroupBox("x10 y505 w425 h135 c" TextColor, "낚시").SetFont("s9 bold")
+    FishingSettingsGui.AddGroupBox("x10 y245 w425 h135 c" TextColor, "낚시").SetFont("s9 bold")
 
-    mg.AddText("x20 y525 w140 h20 c" TextColor, "낚시 조작 딜레이").SetFont("s10")
-    FishingActionDelay := mg.AddEdit("x305 y525 w110 h20")
-    FishingActionDelayHelp := mg.AddText("x210 y525 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y265 w140 h20 c" TextColor, "낚시 조작 딜레이").SetFont("s10")
+    FishingActionDelay := FishingSettingsGui.AddEdit("x305 y265 w110 h20")
+    FishingActionDelayHelp := FishingSettingsGui.AddText("x210 y265 w50 h20 c" Accent, "설명")
     FishingActionDelayHelp.SetFont("underline")
     FishingActionDelayHelp.OnEvent("Click", (*) => InfoPopup.Show("낚시 조작 딜레이", "물고기 바 밸런싱 중 좌클릭 누름/뗌 사이 최소 간격입니다. 입력이 씹히거나 추적이 불안정하면 올리세요."))
 
-    mg.AddText("x20 y548 w140 h20 c" TextColor, "완료 임계값").SetFont("s10")
-    CompletionThreshold := mg.AddEdit("x305 y548 w110 h20")
-    CompletionThresholdHelp := mg.AddText("x210 y548 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y288 w140 h20 c" TextColor, "완료 임계값").SetFont("s10")
+    CompletionThreshold := FishingSettingsGui.AddEdit("x305 y288 w110 h20")
+    CompletionThresholdHelp := FishingSettingsGui.AddText("x210 y288 w50 h20 c" Accent, "설명")
     CompletionThresholdHelp.SetFont("underline")
     CompletionThresholdHelp.OnEvent("Click", (*) => InfoPopup.Show("완료 임계값", "낚시를 완료로 보고 낚시 단계를 끝내는 진행률(%)입니다. 게임이 시각적으로 먼저 가득 차면 100%보다 약간 낮게 두면 더 빨리 끝납니다."))
 
-    mg.AddText("x20 y571 w140 h20 c" TextColor, "흔들기 간격").SetFont("s10")
-    ShakeInterval := mg.AddEdit("x305 y571 w110 h20")
-    ShakeIntervalHelp := mg.AddText("x210 y571 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x20 y311 w140 h20 c" TextColor, "흔들기 간격").SetFont("s10")
+    ShakeInterval := FishingSettingsGui.AddEdit("x305 y311 w110 h20")
+    ShakeIntervalHelp := FishingSettingsGui.AddText("x210 y311 w50 h20 c" Accent, "설명")
     ShakeIntervalHelp.SetFont("underline")
     ShakeIntervalHelp.OnEvent("Click", (*) => InfoPopup.Show("흔들기 간격", "낚시 UI가 뜰 때까지 흔들기 단계에서 Enter를 보내는 간격입니다. 낮을수록 더 자주, 높을수록 덜 흔듭니다."))
 
-    SaveFishBtn := button(mg, "저장", 305, 597, {w: 110, h: 23, bg: BgColor, fontSize: 10})
+    SaveFishBtn := button(FishingSettingsGui, "저장", 305, 337, {w: 110, h: 23, bg: BgColor, fontSize: 10})
 
     ; ---- Right: 조정 ----
-    mg.AddGroupBox("x450 y30 w420 h425 c" TextColor, "조정").SetFont("s9 bold")
+    FishingSettingsGui.AddGroupBox("x450 y30 w420 h425 c" TextColor, "조정").SetFont("s9 bold")
 
-    mg.AddText("x465 y48 w60 h20 c" TextColor, "프리셋").SetFont("s10")
-    TuningPresetDdl := mg.AddDDL("x530 y45 w200 h120", ["엄격", "느슨", "범용", "직접 설정"])
-    TuningPresetHelp := mg.AddText("x740 y48 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y48 w60 h20 c" TextColor, "프리셋").SetFont("s10")
+    TuningPresetDdl := FishingSettingsGui.AddDDL("x530 y45 w200 h120", ["엄격", "느슨", "범용", "직접 설정"])
+    TuningPresetHelp := FishingSettingsGui.AddText("x740 y48 w50 h20 c" Accent, "설명")
     TuningPresetHelp.SetFont("underline")
     TuningPresetHelp.OnEvent("Click", (*) => InfoPopup.Show("조정 프리셋",
         "엄격: 물고기가 극단적으로 빠르고 컨트롤이 낮은 낚싯대 (예: Trihard, Castbound).`n"
@@ -183,61 +191,61 @@ GetGui() {
     savedPreset := MAIN.Has("tuning_preset") ? MAIN["tuning_preset"] : "general"
     TuningPresetDdl.Choose(GetFishingTuningPresetIndex(savedPreset))
 
-    mg.AddText("x465 y82 w160 h20 c" TextColor, "갱신 주기").SetFont("s10")
-    UpdateRateHelp := mg.AddText("x620 y83 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y82 w160 h20 c" TextColor, "갱신 주기").SetFont("s10")
+    UpdateRateHelp := FishingSettingsGui.AddText("x620 y83 w50 h20 c" Accent, "설명")
     UpdateRateHelp.SetFont("underline")
     UpdateRateHelp.OnEvent("Click", (*) => InfoPopup.Show("갱신 주기", "매크로가 밸런싱 판단을 갱신하는 주기(밀리초)입니다. 낮을수록 반응이 빠르지만 클릭이 잦아질 수 있고, 높을수록 부드럽지만 반응이 느려질 수 있습니다."))
-    UpdateRate := mg.AddEdit("x700 y82 w45 h20", MAIN["update_rate"])
-    mg.AddText("x750 y82 w100 h20 c" TextColor, "1 - 35").SetFont("s9")
+    UpdateRate := FishingSettingsGui.AddEdit("x700 y82 w45 h20", MAIN["update_rate"])
+    FishingSettingsGui.AddText("x750 y82 w100 h20 c" TextColor, "1 - 35").SetFont("s9")
 
-    mg.AddText("x465 y112 w160 h20 c" TextColor, "예측 강도").SetFont("s10")
-    PredictionStrengthHelp := mg.AddText("x620 y113 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y112 w160 h20 c" TextColor, "예측 강도").SetFont("s10")
+    PredictionStrengthHelp := FishingSettingsGui.AddText("x620 y113 w50 h20 c" Accent, "설명")
     PredictionStrengthHelp.SetFont("underline")
     PredictionStrengthHelp.OnEvent("Click", (*) => InfoPopup.Show("예측 강도", "플레이어 바의 움직임을 얼마나 앞서 예측할지 정합니다. 높을수록 더 앞서 보고 빨리 반응하고, 낮을수록 직접적이지만 빠른 변화에 뒤처질 수 있습니다."))
-    PredictionStrength := mg.AddEdit("x700 y112 w45 h20", Format("{:.1f}", MAIN["prediction_strength"]))
-    mg.AddText("x750 y112 w100 h20 c" TextColor, "1.0 - 20.0").SetFont("s9")
+    PredictionStrength := FishingSettingsGui.AddEdit("x700 y112 w45 h20", Format("{:.1f}", MAIN["prediction_strength"]))
+    FishingSettingsGui.AddText("x750 y112 w100 h20 c" TextColor, "1.0 - 20.0").SetFont("s9")
 
-    mg.AddText("x465 y142 w160 h20 c" TextColor, "중립 듀티 사이클").SetFont("s10")
-    NDCycleHelp := mg.AddText("x620 y143 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y142 w160 h20 c" TextColor, "중립 듀티 사이클").SetFont("s10")
+    NDCycleHelp := FishingSettingsGui.AddText("x620 y143 w50 h20 c" Accent, "설명")
     NDCycleHelp.SetFont("underline")
     NDCycleHelp.OnEvent("Click", (*) => InfoPopup.Show("중립 듀티 사이클", "밸런싱 중 클릭 유지/해제 기본 비율입니다. 높을수록 유지를 더 자주 하고, 낮을수록 해제를 더 자주 합니다."))
-    NDCycle := mg.AddEdit("x700 y142 w45 h20", Format("{:.1f}", MAIN["neutral_duty_cycle"]))
-    mg.AddText("x750 y142 w100 h20 c" TextColor, "0.20 - 0.60").SetFont("s9")
+    NDCycle := FishingSettingsGui.AddEdit("x700 y142 w45 h20", Format("{:.1f}", MAIN["neutral_duty_cycle"]))
+    FishingSettingsGui.AddText("x750 y142 w100 h20 c" TextColor, "0.20 - 0.60").SetFont("s9")
 
-    mg.AddText("x465 y172 w160 h20 c" TextColor, "근접 임계값").SetFont("s10")
-    CloseThresholdHelp := mg.AddText("x620 y173 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y172 w160 h20 c" TextColor, "근접 임계값").SetFont("s10")
+    CloseThresholdHelp := FishingSettingsGui.AddText("x620 y173 w50 h20 c" Accent, "설명")
     CloseThresholdHelp.SetFont("underline")
     CloseThresholdHelp.OnEvent("Click", (*) => InfoPopup.Show("근접 임계값", "물고기와 플레이어 바가 얼마나 가까워져야 미세 밸런싱으로 전환할지입니다. 낮을수록 더 맞춰야 하고, 높을수록 더 일찍 미세 조절을 시작합니다."))
-    CloseThreshold := mg.AddEdit("x700 y172 w45 h20", Format("{:.2f}", MAIN["close_threshold"]))
-    mg.AddText("x750 y172 w100 h20 c" TextColor, "0.01 - 0.10").SetFont("s9")
+    CloseThreshold := FishingSettingsGui.AddEdit("x700 y172 w45 h20", Format("{:.2f}", MAIN["close_threshold"]))
+    FishingSettingsGui.AddText("x750 y172 w100 h20 c" TextColor, "0.01 - 0.10").SetFont("s9")
 
-    mg.AddText("x465 y202 w160 h20 c" TextColor, "속도 감쇠").SetFont("s10")
-    VelocityDampingHelp := mg.AddText("x620 y203 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y202 w160 h20 c" TextColor, "속도 감쇠").SetFont("s10")
+    VelocityDampingHelp := FishingSettingsGui.AddText("x620 y203 w50 h20 c" Accent, "설명")
     VelocityDampingHelp.SetFont("underline")
     VelocityDampingHelp.OnEvent("Click", (*) => InfoPopup.Show("속도 감쇠", "플레이어 바가 얼마나 빠르게 움직일 때 미세 밸런싱을 멈추고 강한 보정으로 돌아갈지입니다. 낮을수록 빨리 반응하고, 높을수록 더 오래 미세 조절을 유지합니다."))
-    VelocityDamping := mg.AddEdit("x700 y202 w45 h20", MAIN["velocity_damping"])
-    mg.AddText("x750 y202 w100 h20 c" TextColor, "10 - 60").SetFont("s9")
+    VelocityDamping := FishingSettingsGui.AddEdit("x700 y202 w45 h20", MAIN["velocity_damping"])
+    FishingSettingsGui.AddText("x750 y202 w100 h20 c" TextColor, "10 - 60").SetFont("s9")
 
-    mg.AddText("x465 y232 w160 h20 c" TextColor, "비례 게인").SetFont("s10")
-    ProportionalGainHelp := mg.AddText("x620 y233 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y232 w160 h20 c" TextColor, "비례 게인").SetFont("s10")
+    ProportionalGainHelp := FishingSettingsGui.AddText("x620 y233 w50 h20 c" Accent, "설명")
     ProportionalGainHelp.SetFont("underline")
     ProportionalGainHelp.OnEvent("Click", (*) => InfoPopup.Show("비례 게인", "위치 오차에 얼마나 강하게 반응할지입니다. 높을수록 강하게 보정하고, 낮을수록 부드럽지만 더 쉽게 밀릴 수 있습니다."))
-    ProportionalGain := mg.AddEdit("x700 y232 w45 h20", Format("{:.2f}", MAIN["proportional_gain"]))
-    mg.AddText("x750 y232 w100 h20 c" TextColor, "0.10 - 1.50").SetFont("s9")
+    ProportionalGain := FishingSettingsGui.AddEdit("x700 y232 w45 h20", Format("{:.2f}", MAIN["proportional_gain"]))
+    FishingSettingsGui.AddText("x750 y232 w100 h20 c" TextColor, "0.10 - 1.50").SetFont("s9")
 
-    mg.AddText("x465 y262 w160 h20 c" TextColor, "미분 게인").SetFont("s10")
-    DerivativeGainHelp := mg.AddText("x620 y263 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y262 w160 h20 c" TextColor, "미분 게인").SetFont("s10")
+    DerivativeGainHelp := FishingSettingsGui.AddText("x620 y263 w50 h20 c" Accent, "설명")
     DerivativeGainHelp.SetFont("underline")
     DerivativeGainHelp.OnEvent("Click", (*) => InfoPopup.Show("미분 게인", "이동 속도에 얼마나 강하게 반응할지입니다. 높을수록 흔들림을 더 잡지만, 너무 높으면 조작이 튀게 느껴질 수 있습니다."))
-    DerivativeGain := mg.AddEdit("x700 y262 w45 h20", Format("{:.2f}", MAIN["derivative_gain"]))
-    mg.AddText("x750 y262 w100 h20 c" TextColor, "0.00 - 1.00").SetFont("s9")
+    DerivativeGain := FishingSettingsGui.AddEdit("x700 y262 w45 h20", Format("{:.2f}", MAIN["derivative_gain"]))
+    FishingSettingsGui.AddText("x750 y262 w100 h20 c" TextColor, "0.00 - 1.00").SetFont("s9")
 
-    mg.AddText("x465 y292 w160 h20 c" TextColor, "가장자리 경계").SetFont("s10")
-    EdgeBoundaryHelp := mg.AddText("x620 y293 w50 h20 c" Accent, "설명")
+    FishingSettingsGui.AddText("x465 y292 w160 h20 c" TextColor, "가장자리 경계").SetFont("s10")
+    EdgeBoundaryHelp := FishingSettingsGui.AddText("x620 y293 w50 h20 c" Accent, "설명")
     EdgeBoundaryHelp.SetFont("underline")
     EdgeBoundaryHelp.OnEvent("Click", (*) => InfoPopup.Show("가장자리 경계", "바가 가장자리에 얼마나 가까워지면 밸런싱을 멈추고 복구로 전환할지입니다. 높을수록 안전하게, 낮을수록 가장자리에 더 가깝게 허용합니다."))
-    EdgeBoundary := mg.AddEdit("x700 y292 w45 h20", Format("{:.2f}", MAIN["edge_boundary"]))
-    mg.AddText("x750 y292 w100 h20 c" TextColor, "0.02 - 0.30").SetFont("s9")
+    EdgeBoundary := FishingSettingsGui.AddEdit("x700 y292 w45 h20", Format("{:.2f}", MAIN["edge_boundary"]))
+    FishingSettingsGui.AddText("x750 y292 w100 h20 c" TextColor, "0.02 - 0.30").SetFont("s9")
 
     TuningFieldCtrls := [
         UpdateRate, PredictionStrength, NDCycle, CloseThreshold,
@@ -274,7 +282,7 @@ GetGui() {
                 SETTINGS["main"][key] := value
             }
             SyncTuningFieldsFromMain()
-            SetTimer(() => MacroLoop(), MAIN["update_rate"])
+            SetTimer(MacroLoop, MAIN["update_rate"])
             SetTuningFieldsEnabled(false)
         } else {
             SetTuningFieldsEnabled(true)
@@ -314,26 +322,30 @@ GetGui() {
     ; Lock fields for named presets; don't rewrite saved numbers on every GUI open.
     SetTuningFieldsEnabled(savedPreset = "custom")
 
-    mg.AddGroupBox("x450 y505 w420 h135 c" TextColor, "자동 실행").SetFont("s9 bold")
+    mg.AddGroupBox("x450 y30 w420 h135 c" TextColor, "자동 실행").SetFont("s9 bold")
 
-    AutoTotemEnabled := mg.AddCheckbox("x465 y525 h20 w20")
+    AutoTotemEnabled := mg.AddCheckbox("x465 y50 h20 w20")
     AutoTotemEnabled.Value := MAIN.Has("auto_totem_enabled") ? MAIN["auto_totem_enabled"] : 0
-    mg.AddText("x485 y526 w90 h20 c" TextColor, "아이템 사용").SetFont("s10")
-    AutoTotemHelp := mg.AddText("x580 y526 w40 h20 c" Accent, "설명")
+    mg.AddText("x485 y51 w90 h20 c" TextColor, "아이템 사용").SetFont("s10")
+    AutoTotemHelp := mg.AddText("x580 y51 w40 h20 c" Accent, "설명")
     AutoTotemHelp.SetFont("underline")
     AutoTotemHelp.OnEvent("Click", (*) => InfoPopup.Show("아이템 사용", "켜면 낚시 매크로 실행 중 아이템 탭에서 선택한 토템·포션·Shell을 핫바에서 자동으로 사용합니다."))
 
-    global AutoTotemSelectionText := mg.AddText("x465 y547 w390 h18 c" SubColor, FormatAutoTotemSelectionDisplay())
+    global AutoTotemSelectionText := mg.AddText("x465 y72 w390 h18 c" SubColor, FormatAutoTotemSelectionDisplay())
     AutoTotemSelectionText.SetFont("s8")
 
-    global AutoSovereignEnchantCharge := mg.AddCheckbox("x465 y573 w20 h20")
+    global AutoSovereignEnchantCharge := mg.AddCheckbox("x465 y98 w20 h20")
     AutoSovereignEnchantCharge.Value := MAIN.Has("auto_sovereign_enchant_charge_enabled") ? MAIN["auto_sovereign_enchant_charge_enabled"] : 0
-    mg.AddText("x485 y575 w160 h20 c" TextColor, "자동 군주 인챈트 충전").SetFont("s9")
-    AutoSovereignEnchantChargeHelp := mg.AddText("x650 y575 w40 h20 c" Accent, "설명")
+    mg.AddText("x485 y100 w160 h20 c" TextColor, "자동 군주 인챈트 충전").SetFont("s9")
+    AutoSovereignEnchantChargeHelp := mg.AddText("x650 y100 w40 h20 c" Accent, "설명")
     AutoSovereignEnchantChargeHelp.SetFont("underline")
     AutoSovereignEnchantChargeHelp.OnEvent("Click", (*) => InfoPopup.Show("자동 군주 인챈트 충전", "낚시 중 파워가 95% 이하이면 핫바 Relic으로 게임패스 Enchant를 돌려 100% 이상까지 충전한 뒤 낚시를 재개합니다.`n(이하 95% / 목표 100% 고정)"))
 
-    mg.AddText("x465 y603 w280 h20 c" SubColor, "고정: 95% 이하 → 100% 이상까지").SetFont("s8")
+    mg.AddText("x465 y128 w280 h20 c" SubColor, "고정: 95% 이하 → 100% 이상까지").SetFont("s8")
+
+    AdvancedFishingBtn := mg.AddButton("x450 y185 w420 h36", "고급 낚시 설정")
+    AdvancedFishingBtn.OnEvent("Click", (*) => FishingSettingsGui.Show("w880 h475"))
+    mg.AddText("x465 y230 w390 h36 c" SubColor, "캐스팅 · 낚시 · 조정 설정을 변경합니다.").SetFont("s9")
 
     ; lazy-tab controls (outer scope so nested assigns persist)
     AccessabilityHeader := unset
@@ -395,6 +407,9 @@ GetGui() {
     LegalNotice := unset
     MenuDumpBtn := unset
     StellaDumpBtn := unset
+    StellarwaveLogCb := unset
+    StellarwaveLogOpenBtn := unset
+    StellarwaveLogHelp := unset
     MinimizeOnMacroToggle := unset
     NpcDumpBtn := unset
     OpenSettingsBtn := unset
@@ -583,6 +598,7 @@ GetGui() {
                 SummarySessionTimeCb := unset, SummaryCastTimeoutsCb := unset, AlertTotemFailedCb := unset
                 EnchantDumpBtn := unset, HuntDumpBtn := unset, NpcDumpBtn := unset, MenuDumpBtn := unset
                 StellaDumpBtn := unset
+                StellarwaveLogCb := unset, StellarwaveLogOpenBtn := unset, StellarwaveLogHelp := unset
                 ReelDebugCb := unset, ReelDebugLogCb := unset, ReelDebugOpenBtn := unset, ReelDebugHelp := unset
                 AccessabilityHeader := unset
             case 10:
@@ -1097,8 +1113,12 @@ GetGui() {
                 SummaryCastTimeoutsCb := mg.AddCheckbox("x655 y140 h20 w20")
                 mg.AddText("x675 y141 w180 h20 c" TextColor, "캐스트 타임아웃").SetFont("s10")
 
-                mg.AddGroupBox("x10 y320 w860 h130 c" TextColor, "개발자 옵션").SetFont("s9 bold")
-                mg.AddText("x20 y342 w820 h18 c" SubColor, "디버그용 GUI 덤프 / 낚시 PID 오버레이입니다.").SetFont("s8")
+                TelemetryToggle := mg.AddCheckbox("x20 y490 w820 h20", "사용 통계 전송 (설치 ID·장치 해시·앱/OS 버전·오프셋 상태 → OpenMacro)")
+                TelemetryToggle.Value := IsTelemetryEnabled() ? 1 : 0
+                TelemetryToggle.OnEvent("Click", (ctrl, *) => SetTelemetryEnabled(ctrl.Value))
+
+                mg.AddGroupBox("x10 y320 w860 h155 c" TextColor, "개발자 옵션").SetFont("s9 bold")
+                mg.AddText("x20 y342 w820 h18 c" SubColor, "디버그용 GUI 덤프 / 낚시 PID 오버레이 / StellaWave 로그입니다.").SetFont("s8")
                 EnchantDumpBtn := mg.AddText("x20 y370 w120 h18 c" Accent, "인챈트 GUI 덤프")
                 EnchantDumpBtn.SetFont("s9 underline")
                 EnchantDumpBtn.OnEvent("Click", DumpEnchantGuiDebug)
@@ -1147,6 +1167,27 @@ GetGui() {
                 }
                 ReelDebugCb.OnEvent("Click", PersistReelDebugSettings)
                 ReelDebugLogCb.OnEvent("Click", PersistReelDebugSettings)
+
+                StellarwaveLogCb := mg.AddCheckbox("x20 y440 h20 w20")
+                StellarwaveLogCb.Value := USERPREFS.Has("stellarwave_log") ? USERPREFS["stellarwave_log"] : 0
+                mg.AddText("x40 y441 w160 h20 c" TextColor, "StellaWave 파일 로그").SetFont("s9")
+                StellarwaveLogOpenBtn := mg.AddText("x210 y441 w140 h18 c" Accent, "로그 폴더 열기")
+                StellarwaveLogOpenBtn.SetFont("s9 underline")
+                StellarwaveLogOpenBtn.OnEvent("Click", (*) => OpenStellarwaveLogFolder())
+                StellarwaveLogHelp := mg.AddText("x360 y441 w40 h18 c" Accent, "설명")
+                StellarwaveLogHelp.SetFont("s9 underline")
+                StellarwaveLogHelp.OnEvent("Click", (*) => InfoPopup.Show("StellaWave 로그",
+                    "켜면 기믹 시작/종료, 서클 완료·시작, 문양 클릭, 맵/버튼 누락을`n"
+                    . "%APPDATA%\OpenMacro\XTernal\stellarwave.log 에 기록합니다.`n"
+                    . "클릭이 씹히거나 서클이 멈출 때 이 로그를 같이 보내 주세요."))
+
+                PersistStellarwaveLogSettings(*) {
+                    global USERPREFS, SETTINGS
+                    USERPREFS["stellarwave_log"] := StellarwaveLogCb.Value ? 1 : 0
+                    SETTINGS["user"]["stellarwave_log"] := USERPREFS["stellarwave_log"]
+                    SaveSettingsFile()
+                }
+                StellarwaveLogCb.OnEvent("Click", PersistStellarwaveLogSettings)
 
             case 10:
 
@@ -1998,7 +2039,7 @@ GetGui() {
 	ResizeGuiTab(ctrl, *){
 		switch ctrl.Value{
 			case 1: ; fishing
-				w := 880, h := 720
+				w := 880, h := 300
 			case 2: ; window & harpoon
 				w := 880, h := 500
 			case 3: ; appraisal

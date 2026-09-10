@@ -136,17 +136,107 @@ IsRodEquipped() {
         return false
 
     rodName := GetHotbarRodName()
-    if (rodName != "")
-        return (equippedTool = rodName)
+    if (rodName != "") {
+        if (equippedTool = rodName)
+            return true
+        ; Enchant prefixes / slight name drift (e.g. hotbar vs Tool instance).
+        if (InStr(equippedTool, rodName) || InStr(rodName, equippedTool))
+            return true
+    }
+
+    if (IsStellarwaveRodText(equippedTool) || IsBellonaRodText(equippedTool) || IsPinionRodText(equippedTool)
+        || IsTranquilityRodText(equippedTool) || IsLullabyRodText(equippedTool) || IsRequiemRodText(equippedTool)
+        || IsNoiseformRodText(equippedTool) || IsHalibutHarpoonRodText(equippedTool))
+        return true
 
     return InStr(equippedTool, "Rod") ? true : false
 }
 
-EnsureRodEquipped() {
+; Hotbar digit for the fishing rod (falls back to "1").
+GetHotbarRodSlotKey() {
+    hotbar := GetHotbarGui()
+    if !hotbar
+        return "1"
+
+    for itemAddr in ReadChildren(hotbar) {
+        if (ReadClassName(itemAddr) != "ImageButton" || ReadInstanceName(itemAddr) != "ItemTemplate")
+            continue
+
+        toolText := ReadHotbarItemName(itemAddr)
+        if (toolText = "")
+            continue
+
+        isRod := (ExtractPureRodName(toolText) != "")
+            || IsStellarwaveRodText(toolText) || IsBellonaRodText(toolText) || IsPinionRodText(toolText)
+            || IsTranquilityRodText(toolText) || IsLullabyRodText(toolText) || IsRequiemRodText(toolText)
+            || IsNoiseformRodText(toolText) || IsHalibutHarpoonRodText(toolText)
+            || RegExMatch(toolText, "i)\brod\b")
+        if !isRod
+            continue
+
+        slotKey := ReadHotbarItemSlotKey(itemAddr)
+        if (slotKey != "")
+            return slotKey
+    }
+
+    return "1"
+}
+
+; Ensure a fishing rod is in hand. forceRefresh=true unequips first (cast reset).
+; Always verifies Tool on character — Roblox hotbar keys toggle, so a single
+; blind "1" can put the rod away and look like "re-equip failed".
+EnsureRodEquipped(forceRefresh := false) {
+    global Macro
+    try FocusRobloxWindow()
+    catch {
+    }
+
+    ; Reset casting through the rod's hotbar toggle, never through Escape.
+    if (forceRefresh && !Macro.cycleEnabled)
+        return false
+
+    slotKey := GetHotbarRodSlotKey()
+    if (slotKey = "")
+        slotKey := "1"
+
+    if (forceRefresh && IsRodEquipped()) {
+        SelectHotbarSlot(slotKey)
+        Sleep(150)
+        ; Wait briefly for unequip to register before re-selecting.
+        loop 8 {
+            if (forceRefresh && !Macro.cycleEnabled)
+                return false
+            if !IsRodEquipped()
+                break
+            Sleep(40)
+        }
+        ; Still equipped means the unequip input did not take effect. Do not
+        ; report a successful reset or start a new cast on the old line.
+        if IsRodEquipped()
+            return false
+    }
+
     if IsRodEquipped()
         return true
 
-    return SelectHotbarSlot("1")
+    loop 4 {
+        if (forceRefresh && !Macro.cycleEnabled)
+            return false
+        SelectHotbarSlot(slotKey)
+        Sleep(140)
+        if (forceRefresh && !Macro.cycleEnabled)
+            return false
+        if IsRodEquipped()
+            return true
+
+        if (A_Index = 2) {
+            try FocusRobloxWindow()
+            catch {
+            }
+        }
+    }
+
+    return IsRodEquipped()
 }
 
 TryUseHotbarItem(itemName) {

@@ -431,43 +431,82 @@ GetViewportDimensions() {
 }
 
 GetRobloxClientScreenRect(&left, &top, &width, &height) {
-    pid := GetRobloxPID()
-    if (!pid)
+    hwnd := GetRobloxGameHwnd()
+    if (!hwnd)
         return false
 
-    hwnd := 0
+    try WinGetClientPos(&left, &top, &width, &height, "ahk_id " hwnd)
+    catch
+        return false
+    return (width >= 32 && height >= 32)
+}
+
+; Prefer the largest visible Roblox game window (WINDOWSCLIENT). Avoids tiny
+; helper/tray HWNDs whose "center" sits on the taskbar or off-screen.
+GetRobloxGameHwnd() {
+    static cachedHwnd := 0, cachedAt := 0, cachedPid := 0
+
+    pid := GetRobloxPID()
+    if (!pid) {
+        cachedHwnd := 0
+        cachedPid := 0
+        return 0
+    }
+
+    if (cachedHwnd && cachedPid = pid && (A_TickCount - cachedAt) < 500) {
+        try {
+            if WinExist("ahk_id " cachedHwnd)
+                return cachedHwnd
+        } catch {
+        }
+    }
+
+    bestHwnd := 0
+    bestArea := 0
     for id in WinGetList("ahk_pid " pid) {
         try {
-            if (WinGetClass(id) = "WINDOWSCLIENT" || InStr(WinGetTitle(id), "Roblox")) {
-                hwnd := id
-                break
+            cls := WinGetClass(id)
+            if (cls != "WINDOWSCLIENT" && !InStr(WinGetTitle(id), "Roblox"))
+                continue
+            l := 0, t := 0, w := 0, h := 0
+            WinGetClientPos(&l, &t, &w, &h, "ahk_id " id)
+            if (w < 32 || h < 32)
+                continue
+            try {
+                if (WinGetMinMax("ahk_id " id) = -1)
+                    continue
+            } catch {
+            }
+            area := w * h
+            if (area > bestArea) {
+                bestArea := area
+                bestHwnd := id
             }
         } catch {
             continue
         }
     }
-    if (!hwnd) {
-        hwnd := WinExist("ahk_pid " pid)
-        if (!hwnd)
-            return false
+    if (!bestHwnd) {
+        bestHwnd := WinExist("ahk_pid " pid)
+        if (!bestHwnd)
+            bestHwnd := 0
     }
 
-    try WinGetClientPos(&left, &top, &width, &height, "ahk_id " hwnd)
-    catch
-        return false
-    return true
+    cachedHwnd := bestHwnd
+    cachedPid := pid
+    cachedAt := A_TickCount
+    return bestHwnd
 }
 
 FocusRobloxWindow() {
-    pid := GetRobloxPID()
-    if (!pid)
+    hwnd := GetRobloxGameHwnd()
+    if (!hwnd)
         return
-    hwnd := WinExist("ahk_pid " pid)
-    if (hwnd) {
-        try {
-            WinActivate("ahk_id " hwnd)
-            WinWaitActive("ahk_id " hwnd, , 0.5)
-        }
+    try {
+        if (WinActive("ahk_id " hwnd))
+            return
+        WinActivate("ahk_id " hwnd)
+        WinWaitActive("ahk_id " hwnd, , 0.15)
     }
 }
 

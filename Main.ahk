@@ -100,7 +100,7 @@ Initialize() {
 
     UpdateRobloxUiState()
 
-    SetTimer(() => MacroLoop(), MAIN["update_rate"])
+    SetTimer(MacroLoop, MAIN["update_rate"])
     SetTimer(() => RobloxAttachWatcher(), ATTACH_WATCHER_INTERVAL_MS)
     SetTimer(() => RodWatcher(), ROD_WATCH_INTERVAL_MS)
     SetTimer(() => HuntDetectWatcher(), HUNT_DETECT_INTERVAL_MS)

@@ -24,21 +24,16 @@
 
 global REMOTE_OFFSETS_URL := "https://openmacro.net/api/v2/offsets/latest"
 global REMOTE_OFFSETS_CACHE_TTL_MS := 60000
+global REMOTE_OFFSETS_404_TTL_MS := 15000
+global REMOTE_OFFSETS_NET_TTL_MS := 5000
 global _LastRemoteFetchAt := 0
 global _LastRemoteFetchResult := ""
+global _LastHashFetchAt := 0
+global _LastHashFetchKey := ""
+global _LastHashFetchParsed := ""
+global g_LastHashOffsetsStatus := 0
 
-FetchRemoteOffsets() {
-    global _LastRemoteFetchAt, _LastRemoteFetchResult, REMOTE_OFFSETS_CACHE_TTL_MS, REMOTE_OFFSETS_URL, OFFSETS_API_BASES
-
-    if (_LastRemoteFetchAt && (A_TickCount - _LastRemoteFetchAt) < REMOTE_OFFSETS_CACHE_TTL_MS)
-        return _LastRemoteFetchResult
-
-    _LastRemoteFetchAt := A_TickCount
-    _LastRemoteFetchResult := ""
-
-    ; v2 unifies offsets at the TOP-LEVEL /api/v2/offsets/latest (NOT under /xternal),
-    ; so fetch it against OFFSETS_API_BASES rather than the product base.
-    body := FetchApiText("/latest", OFFSETS_API_BASES)
+ParseOffsetsResponse(body) {
     if (body = "")
         return ""
 
@@ -53,8 +48,96 @@ FetchRemoteOffsets() {
     if !(parsed is Map) || !(parsed.Has("offsets") || parsed.Has("Offsets"))
         return ""
 
+    return parsed
+}
+
+ParsedOffsetsVersion(parsed) {
+    if !(parsed is Map)
+        return ""
+    if (parsed.Has("version"))
+        return Trim(parsed["version"], " `t`r`n")
+    if (parsed.Has("Roblox Version"))
+        return Trim(parsed["Roblox Version"], " `t`r`n")
+    return ""
+}
+
+InvalidateOffsetsFetchCache() {
+    global _LastRemoteFetchAt, _LastRemoteFetchResult
+    global _LastHashFetchAt, _LastHashFetchKey, _LastHashFetchParsed, g_LastHashOffsetsStatus
+
+    _LastRemoteFetchAt := 0
+    _LastRemoteFetchResult := ""
+    _LastHashFetchAt := 0
+    _LastHashFetchKey := ""
+    _LastHashFetchParsed := ""
+    g_LastHashOffsetsStatus := 0
+}
+
+FetchRemoteOffsets() {
+    global _LastRemoteFetchAt, _LastRemoteFetchResult, REMOTE_OFFSETS_CACHE_TTL_MS, OFFSETS_API_BASES
+
+    if (_LastRemoteFetchAt && (A_TickCount - _LastRemoteFetchAt) < REMOTE_OFFSETS_CACHE_TTL_MS)
+        return _LastRemoteFetchResult
+
+    _LastRemoteFetchAt := A_TickCount
+    _LastRemoteFetchResult := ""
+
+    ; v2 unifies offsets at the TOP-LEVEL /api/v2/offsets/latest (NOT under /xternal),
+    ; so fetch it against OFFSETS_API_BASES rather than the product base.
+    parsed := ParseOffsetsResponse(FetchApiText("/latest", OFFSETS_API_BASES))
     _LastRemoteFetchResult := parsed
     return parsed
+}
+
+; GET /api/v2/offsets/<hash> — the offsets for THIS client build, not "whatever is newest".
+; Heal used to apply /latest, which is how a supported-but-older install ended up on
+; "이 빌드에 오프셋이 아직 맞지 않음" while the matching blob was already published.
+; Returns the parsed blob or "". g_LastHashOffsetsStatus is 200 / 404 / 0 (unreachable).
+FetchRemoteOffsetsForHash(versionHash) {
+    global OFFSETS_API_BASES, g_LastApiBase, g_LastHashOffsetsStatus
+    global _LastHashFetchAt, _LastHashFetchKey, _LastHashFetchParsed
+    global REMOTE_OFFSETS_CACHE_TTL_MS, REMOTE_OFFSETS_404_TTL_MS, REMOTE_OFFSETS_NET_TTL_MS
+
+    versionHash := Trim(versionHash, " `t`r`n")
+    if (versionHash = "") {
+        g_LastHashOffsetsStatus := 0
+        return ""
+    }
+
+    if (_LastHashFetchKey = versionHash && _LastHashFetchAt) {
+        elapsed := A_TickCount - _LastHashFetchAt
+        ttl := REMOTE_OFFSETS_CACHE_TTL_MS
+        if (g_LastHashOffsetsStatus = 404)
+            ttl := REMOTE_OFFSETS_404_TTL_MS
+        else if (g_LastHashOffsetsStatus = 0)
+            ttl := REMOTE_OFFSETS_NET_TTL_MS
+        if (elapsed < ttl)
+            return _LastHashFetchParsed
+    }
+
+    _LastHashFetchKey := versionHash
+    _LastHashFetchAt := A_TickCount
+    _LastHashFetchParsed := ""
+    g_LastHashOffsetsStatus := 0
+
+    for _, base in OFFSETS_API_BASES {
+        try {
+            req := SendHttpRequest("GET", base "/" versionHash)
+        } catch {
+            continue
+        }
+        g_LastApiBase := base
+        g_LastHashOffsetsStatus := req.Status
+        if (req.Status = 200) {
+            parsed := ParseOffsetsResponse(req.ResponseText)
+            _LastHashFetchParsed := parsed
+            return parsed
+        }
+        return ""
+    }
+
+    g_LastHashOffsetsStatus := 0
+    return ""
 }
 
 ; The build hash of the NEWEST published offsets, per the API
@@ -90,18 +173,10 @@ GetLatestOffsetsVersionHash() {
 ; codes (only a transport failure throws), so a 404 is observed as a status, not an
 ; exception.
 GetOffsetsVersionStatus(versionHash) {
-    global OFFSETS_API_BASES, g_LastApiBase
+    global g_LastHashOffsetsStatus
 
-    for _, base in OFFSETS_API_BASES {
-        try {
-            req := SendHttpRequest("GET", base "/" versionHash)
-        } catch {
-            continue   ; transport error against this base -- try the next
-        }
-        g_LastApiBase := base
-        return req.Status
-    }
-    return 0
+    FetchRemoteOffsetsForHash(versionHash)
+    return g_LastHashOffsetsStatus
 }
 
 BackupAndWriteOffsetsFile(parsed) {

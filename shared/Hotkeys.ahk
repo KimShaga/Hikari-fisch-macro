@@ -34,12 +34,15 @@ global _LastVersionCheckAt := 0
 ; it resumes on its own; the flag flipping back suppresses nothing further.
 CheckRobloxVersionMismatch(pid) {
     global _LastVersionCheckAt, VERSION_CHECK_COOLDOWN_MS, g_BuildUnsupported
-    global g_LatestSupportedOffsetsVersion
+    global g_LatestSupportedOffsetsVersion, REMOTE_OFFSETS_404_TTL_MS
 
     if (!pid)
         return
 
-    if (_LastVersionCheckAt && (A_TickCount - _LastVersionCheckAt) < VERSION_CHECK_COOLDOWN_MS)
+    cooldown := VERSION_CHECK_COOLDOWN_MS
+    if (IsSet(g_BuildUnsupported) && g_BuildUnsupported)
+        cooldown := REMOTE_OFFSETS_404_TTL_MS
+    if (_LastVersionCheckAt && (A_TickCount - _LastVersionCheckAt) < cooldown)
         return
 
     _LastVersionCheckAt := A_TickCount
@@ -520,6 +523,12 @@ FixRoblox() {
     }
 
     ClearMacroPhaseCache()
+
+    try InvalidateOffsetsFetchCache()
+    catch {
+    }
+    global _LastVersionCheckAt
+    _LastVersionCheckAt := 0
 
     CheckRobloxVersionMismatch(pid)
 
