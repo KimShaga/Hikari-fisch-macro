@@ -3965,7 +3965,19 @@ GetHalibutWarningRect(barAddr := 0) {
     warnRect := ReadAbsoluteRect(warnAddr)
     if (!IsObject(barRect) || !IsObject(warnRect))
         return ""
-    if (barRect.w <= 1.0 || warnRect.w < 16.0 || warnRect.h < 16.0)
+    ; Some clients report a tiny/zero AbsoluteSize on the bang ImageLabel while
+    ; position is valid — synthesize a minimum hitbox so Halibut still tracks !.
+    if (warnRect.w < 16.0 || warnRect.h < 16.0) {
+        if (warnRect.x = 0.0 && warnRect.y = 0.0)
+            return ""
+        warnRect := {
+            x: warnRect.x,
+            y: warnRect.y,
+            w: Max(warnRect.w, 24.0),
+            h: Max(warnRect.h, 24.0)
+        }
+    }
+    if (barRect.w <= 1.0)
         return ""
 
     ; Bang always sits close to the bar vertically (dump: ~62px above center).
@@ -4139,7 +4151,7 @@ LogStellarwave(event, detail := "") {
     now := A_TickCount
     if (event = "wait_fill" && lastEvent = "wait_fill" && lastAt && (now - lastAt) < 500)
         return
-    if ((event = "bottom_miss" || event = "map_miss" || event = "idx_block" || event = "empty_tops")
+    if ((event = "bottom_miss" || event = "map_miss" || event = "idx_block" || event = "empty_tops" || event = "click_fail")
         && event = lastEvent && lastAt && (now - lastAt) < 500)
         return
     lastEvent := event
@@ -4649,12 +4661,74 @@ _TryClickStellarwaveNextSignInner(controller, ctx := "") {
             . " clicks=" controller.swRoundClicks
             . " pending=" controller.swPendingFill)
     } else {
-        LogStellarwave("click_fail",
-            "idx=" nextIdx
-            . " topImg=" top.img
-            . " bottomImg=" bottomImg)
+        ; Back off so we don't spin the fast timer on zero-size GUI forever.
+        controller.swLastClickAt := A_TickCount + 120
     }
     return ok
+}
+
+; Prefer TextButton AbsoluteRect; if size is still 0 (layout lag / some clients),
+; fall back to baseSign / any sized child. Returns {x,y} screen coords or 0.
+ResolveStellarwaveClickScreenPos(btn) {
+    if (!btn)
+        return 0
+
+    pos := GuiCenterToScreen(btn)
+    if (IsObject(pos))
+        return pos
+
+    base := 0
+    try base := FindChildByName(btn, "baseSign")
+    catch {
+        base := 0
+    }
+    if (base) {
+        pos := GuiCenterToScreen(base)
+        if (IsObject(pos))
+            return pos
+    }
+
+    try {
+        for childPtr in ReadChildren(btn) {
+            if !HasValidGuiClickRect(childPtr)
+                continue
+            pos := GuiCenterToScreen(childPtr)
+            if (IsObject(pos))
+                return pos
+        }
+    } catch {
+    }
+
+    ; Last resort: AbsolutePosition point click even when AbsoluteSize reads 0
+    ; (seen on some clients where TextButton size lags behind ImageId).
+    rect := ReadAbsoluteRect(btn)
+    if ((!IsObject(rect) || (rect.x = 0.0 && rect.y = 0.0)) && base) {
+        rect := ReadAbsoluteRect(base)
+    }
+    if (!IsObject(rect))
+        return 0
+    if (rect.x = 0.0 && rect.y = 0.0 && rect.w <= 0 && rect.h <= 0)
+        return 0
+
+    centerX := rect.x + ((rect.w > 1) ? rect.w / 2 : 12)
+    centerY := rect.y + ((rect.h > 1) ? rect.h / 2 : 12)
+
+    left := 0, top := 0, clientW := 0, clientH := 0
+    if !GetRobloxClientScreenRect(&left, &top, &clientW, &clientH)
+        return {x: Round(centerX), y: Round(centerY)}
+
+    try {
+        vp := GetViewportDimensions()
+        if (vp.w > 1 && vp.h > 1 && clientW > 0 && clientH > 0) {
+            if (Abs(vp.w - clientW) > 2 || Abs(vp.h - clientH) > 2) {
+                centerX *= clientW / vp.w
+                centerY *= clientH / vp.h
+            }
+        }
+    } catch {
+    }
+
+    return {x: Round(left + centerX), y: Round(top + centerY)}
 }
 
 ; Lean click: short hover wiggle + Click. Cursor stays near the sign row between
@@ -4663,9 +4737,16 @@ _StellarwaveFastClick(controller, btn) {
     if (!btn)
         return false
 
-    pos := GuiCenterToScreen(btn)
-    if (!IsObject(pos))
+    pos := ResolveStellarwaveClickScreenPos(btn)
+    if (!IsObject(pos)) {
+        rect := ReadAbsoluteRect(btn)
+        detail := "reason=no_pos"
+        if (IsObject(rect))
+            detail .= " x=" Round(rect.x, 1) " y=" Round(rect.y, 1)
+                . " w=" Round(rect.w, 1) " h=" Round(rect.h, 1)
+        LogStellarwave("click_fail", detail)
         return false
+    }
 
     x := Round(pos.x)
     y := Round(pos.y)
