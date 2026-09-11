@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OpenMacro XTernal
 ;  SPDX-License-Identifier: AGPL-3.0-only
 ;  SPDX-FileCopyrightText: (c) 2026 OpenMacro XTernal (@anorexc)
@@ -384,28 +384,35 @@ ReadAbsoluteRect(instanceAddr) {
 
 GuiCenterToScreen(instanceAddr) {
     rect := ReadAbsoluteRect(instanceAddr)
-    if (rect.w <= 0 || rect.h <= 0)
+    left := 0, top := 0, clientW := 0, clientH := 0
+    ; AbsolutePosition is client/render space, never a desktop fallback.
+    if !GetRobloxClientScreenRect(&left, &top, &clientW, &clientH)
         return 0
+    vp := {w: 0, h: 0}
+    try vp := GetViewportDimensions()
+    return GuiRectCenterToScreen(rect, left, top, clientW, clientH, vp)
+}
 
+GuiRectCenterToScreen(rect, left, top, clientW, clientH, vp) {
+    if (clientW < 32 || clientH < 32 || rect.w <= 0 || rect.h <= 0)
+        return 0
+    for value in [rect.x, rect.y, rect.w, rect.h, left, top, clientW, clientH, vp.w, vp.h] {
+        if (!IsNumber(value) || value != value || Abs(value) > 10000000)
+            return 0
+    }
     centerX := rect.x + rect.w / 2
     centerY := rect.y + rect.h / 2
-
-    left := 0, top := 0, clientW := 0, clientH := 0
-    if !GetRobloxClientScreenRect(&left, &top, &clientW, &clientH)
-        return {x: Round(centerX), y: Round(centerY)}
-
-    try {
-        vp := GetViewportDimensions()
-        if (vp.w > 1 && vp.h > 1 && clientW > 0 && clientH > 0) {
-            if (Abs(vp.w - clientW) > 2 || Abs(vp.h - clientH) > 2) {
-                centerX *= clientW / vp.w
-                centerY *= clientH / vp.h
-            }
+    if (vp.w > 1 && vp.h > 1) {
+        if (Abs(vp.w-clientW) > 2 || Abs(vp.h-clientH) > 2) {
+            centerX *= clientW / vp.w
+            centerY *= clientH / vp.h
         }
-    } catch {
     }
-
-    return {x: Round(left + centerX), y: Round(top + centerY)}
+    ; Reject stale/hidden/off-client targets, including rounding at the edge.
+    x := Round(centerX), y := Round(centerY)
+    if (x < 0 || y < 0 || x >= clientW || y >= clientH)
+        return 0
+    return {x: Round(left+x), y: Round(top+y)}
 }
 
 GetViewportDimensions() {

@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OpenMacro XTernal
 ;  SPDX-License-Identifier: AGPL-3.0-only
 ;  SPDX-FileCopyrightText: (c) 2026 OpenMacro XTernal (@anorexc)
@@ -2722,6 +2722,20 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
             return DumpBounceVel()
     }
 
+    ; Narrow physical bars track their CENTER. Incoming error is fish minus
+    ; bar LEFT edge, so zero is an edge and is not a stable capture target.
+    ; One continuous PD output avoids depart/chase/preslow switching near lock.
+    if (thinBar && !lullabyRod) {
+        centerError := error - bw * 0.5
+        relativeVelocity := playerbarVelocity - fishVelocity
+        neutralDuty := MAIN["neutral_duty_cycle"] + 0.0
+        positionTerm := (MAIN["proportional_gain"] + 0.0) * centerError / Max(bw * 0.5, 0.01)
+        dampingTerm := (MAIN["velocity_damping"] + 0.0) * relativeVelocity
+        feedForward := (MAIN["derivative_gain"] + 0.0) * fishVelocity
+        targetDuty := Max(0.0, Min(1.0, neutralDuty + positionTerm - dampingTerm + feedForward))
+        return FinishThin({ mode: "pwm", duty: targetDuty, reason: "center_pd", inside: fishInside })
+    }
+
     ; Zone settle: near the lock point, hold neutral instead of twitching.
     ; Do NOT settle while the zone/fish target is already moving (11:50 settle
     ; then fishV jump to +0.09 → |err| 0.54 with no head start).
@@ -2852,6 +2866,15 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
     ; Noiseform bar is often >0.16 wide, so thin-only dump missed post-zone slides.
     ; Skip while fish is still fleeing with a real gap (11:32 dump at |err|~0.08 stalled chase).
     fishFleeingEarly := Abs(fishVelocity) >= 0.0035 && (error * fishVelocity) > 0
+    ; A fish outside the bar that is pulling away is not a fast arrival.
+    ; Do not let the near-gap emergency brakes reverse a valid pursuit.
+    ; FinishThin still applies wall protection; zone targets keep their tuning.
+    if (!zoneTarget && !fishInside && approachingTarget && fishFleeingEarly
+        && error * (playerbarVelocity - fishVelocity) <= 0) {
+        if (error > 0)
+            return FinishThin({ mode: "hold", duty: 1.0, reason: "outside_flee", inside: false })
+        return FinishThin({ mode: "release", duty: 0.0, reason: "outside_flee", inside: false })
+    }
     ; 18:03/18:07/18:09: residual |barV|~0.02–0.03 at zero → return slip ~0.10–0.14.
     ; Widen kill window and dump hard while still outside on a fast close.
     ; 18:54 Lullaby: skip hard-kill while fish is comfortably inside the wide bar —
@@ -2947,13 +2970,16 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
     if (zoneTarget)
         lookScale += 1.2
 
-    brakeLookahead := absVel * lookScale
-    needsPreSlow := approachingTarget
+    ; Brake for the rate at which the gap closes, not common motion.
+    ; Keep synthetic zone targets on their existing tuning.
+    closingSpeed := zoneTarget ? absVel : Max(0.0, (error >= 0 ? 1 : -1) * (playerbarVelocity - fishVelocity))
+    brakeLookahead := closingSpeed * lookScale
+    needsPreSlow := approachingTarget && closingSpeed > 0
         && (remainingDistance <= preSlowMaxDist)
         && (brakeLookahead >= remainingDistance)
     ; Near-target flutter (09:35): with tiny barV, preslow↔chase toggled every tick.
     ; Micro approaches belong to PID, not brake/chase thrash.
-    if (!zoneTarget && absVel < 0.0045 && absErr < 0.045)
+    if (!zoneTarget && closingSpeed < 0.0045 && absErr < 0.045)
         needsPreSlow := false
 
     ; Fish still running away — do not cut chase into soft brake (11:32: ebrake at
@@ -4736,36 +4762,22 @@ ResolveStellarwaveClickScreenPos(btn) {
 _StellarwaveFastClick(controller, btn) {
     if (!btn)
         return false
-
-    pos := ResolveStellarwaveClickScreenPos(btn)
-    if (!IsObject(pos)) {
-        rect := ReadAbsoluteRect(btn)
-        detail := "reason=no_pos"
-        if (IsObject(rect))
-            detail .= " x=" Round(rect.x, 1) " y=" Round(rect.y, 1)
-                . " w=" Round(rect.w, 1) " h=" Round(rect.h, 1)
-        LogStellarwave("click_fail", detail)
+    hwnd := GetRobloxGameHwnd()
+    if (!hwnd)
         return false
-    }
-
-    x := Round(pos.x)
-    y := Round(pos.y)
-
+    ; Focusing/restoring can change the client origin. Resolve AFTER focus.
+    if !WinActive("ahk_id " hwnd)
+        FocusRobloxWindow()
+    if !WinActive("ahk_id " hwnd)
+        return false
+    pos := ResolveStellarwaveClickScreenPos(btn)
+    if (!IsObject(pos))
+        return false
+    x := Round(pos.x), y := Round(pos.y)
     if (!controller._swSafeX)
         _StellarwaveCacheSafePos(controller)
-
-    hwnd := GetRobloxGameHwnd()
-    if (hwnd) {
-        try {
-            if !WinActive("ahk_id " hwnd)
-                FocusRobloxWindow()
-        } catch {
-        }
-    }
-
     wiggle := Max(1, StellarwaveController.CLICK_WIGGLE_PX)
     step := Max(0, Round(StellarwaveController.CLICK_STEP_MS))
-
     prev := A_CoordModeMouse
     CoordMode("Mouse", "Screen")
     try {
@@ -4778,10 +4790,19 @@ _StellarwaveFastClick(controller, btn) {
         MouseMove(x, y, 0)
         if (step > 0)
             Sleep(step)
-        Click()
+        ; An instantaneous down/up can be missed between game input samples.
+        ; Always release even if the wait is interrupted by an error.
+        try {
+            Click("Down")
+            Sleep(StellarwaveController.CLICK_HOLD_MS)
+        } finally {
+            Click("Up")
+        }
     } finally {
         CoordMode("Mouse", prev)
     }
+    ; This records input dispatch, not a game acknowledgement.
+    LogStellarwave("input_sent", "x=" x " y=" y " holdMs=" StellarwaveController.CLICK_HOLD_MS)
     return true
 }
 
@@ -4818,6 +4839,7 @@ class StellarwaveController extends FishingController {
     static CLICK_WIGGLE_PX := 1
     ; Sleep between wiggle samples (~1 frame) so TextButtons see hover.
     static CLICK_STEP_MS := 1
+    static CLICK_HOLD_MS := 20
     ; Gap after a click before another attempt is allowed.
     static CLICK_COOLDOWN_MS := 1
     ; Pause after finishing one full circle before starting the next deal.

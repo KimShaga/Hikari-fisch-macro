@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  Hikari's Edited Fisch Macro — Enchant (Keepers Altar / Enchant Anywhere)
 ; ============================================================================
 #Requires AutoHotkey v2.0
@@ -931,6 +931,8 @@ DumpEnchantGuiDebug(*) {
 ClickEnchantGuiButton(btn) {
     global Macro
 
+    Macro.enchantCachedX := 0
+    Macro.enchantCachedY := 0
     pos := GuiCenterToScreen(btn)
     if (!IsObject(pos))
         throw Error("인챈트 클릭 좌표 계산 실패")
@@ -1453,16 +1455,16 @@ UpdateGamepassEnchantPhase() {
                 if (HandleKeepersAwaitIfOpen(desired))
                     return
                 FocusRobloxWindow()
-                if (Macro.enchantCachedX && Macro.enchantCachedY) {
-                    ReliableScreenClick(Macro.enchantCachedX, Macro.enchantCachedY, 3, 5)
-                } else {
-                    if (!FindPlayerGui())
-                        throw Error("PlayerGui를 찾지 못했습니다.")
-                    btn := ResolveEnchantButtonWithTimeout(FindEnchantRodButton)
-                    if (!btn)
-                        throw Error("Enchant 버튼을 찾지 못했습니다. 인벤토리/TopButtons에 Enchant가 보이는지 확인하세요.")
-                    ClickEnchantGuiButton(btn)
-                }
+                ; Like Stellarwave, resolve the live button for every click.
+                ; A cached desktop coordinate survives resize/UI relayout incorrectly.
+                Macro.enchantCachedX := 0
+                Macro.enchantCachedY := 0
+                if (!FindPlayerGui())
+                    throw Error("PlayerGui를 찾지 못했습니다.")
+                btn := ResolveEnchantButtonWithTimeout(FindEnchantRodButton)
+                if (!btn)
+                    throw Error("Enchant 버튼을 찾지 못했습니다. 인벤토리/TopButtons에 Enchant가 보이는지 확인하세요.")
+                ClickEnchantGuiButton(btn)
                 try Macro.enchantBaselineText := CollectRodEnchantHaystack()
                 catch {
                 }
