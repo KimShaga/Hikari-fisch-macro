@@ -44,8 +44,11 @@ GUI 개선
 그 외 여러가지
 
 [스텔라웨이브 돈작 테스트 영상](https://youtu.be/DynLK9EjU9A)
+
 [럴러바이 테스트 영상](https://youtu.be/k6l38ZX8EIQ)
+
 [노이즈 폼 테스트 영상](https://youtu.be/fmoRHaSsYPw)
+
 [할리벗 하푼 테스트 영상](https://youtu.be/03FGReAdt5M)
 
 디스코드에 가입해서 업데이트 소식을 빠르게 받으세요
