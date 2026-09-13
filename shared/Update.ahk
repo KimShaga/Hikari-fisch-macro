@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OpenMacro XTernal
 ;  SPDX-License-Identifier: AGPL-3.0-only
 ;  SPDX-FileCopyrightText: (c) 2026 OpenMacro XTernal (@anorexc)
@@ -781,4 +781,67 @@ CleanupUpdateArtifacts(tempRoot, helperPath := "") {
     if (helperPath != "" && FileExist(helperPath)) {
         try FileDelete(helperPath)
     }
+}
+
+; Advisory only; never downloads or replaces executable code.
+global g_HikariVersionRequest := 0
+global g_HikariUpdateNotice := 0
+
+StartHikariVersionCheck() {
+    global g_HikariVersionRequest
+    static started := false
+    if started
+        return
+    started := true
+    try {
+        req := WinHttpRequest()
+        g_HikariVersionRequest := req
+        req.SetTimeouts(3000, 3000, 3000, 3000)
+        req.Open("GET", "https://raw.githubusercontent.com/KimShaga/Hikari-s-Edited-fisch-macro/main/version.txt", true)
+        req.SetRequestHeader("Cache-Control", "no-cache")
+        req.OnResponseFinished := HikariVersionCheckFinished
+        req.OnError := HikariVersionCheckFailed
+        req.Send()
+    } catch {
+        g_HikariVersionRequest := 0
+    }
+}
+
+HikariShouldNotifyUpdate(remote, installedVersion) {
+    remote := Trim(remote, " `t`r`n" Chr(0xFEFF))
+    return IsValidVersionString(remote) && IsValidVersionString(installedVersion)
+        && CompareVersions(remote, installedVersion) > 0
+}
+
+HikariVersionCheckFailed(*) {
+    global g_HikariVersionRequest
+    g_HikariVersionRequest := 0
+}
+
+HikariVersionCheckFinished(req) {
+    global FULL_VER, g_HikariVersionRequest
+    try {
+        if (req.Status != 200)
+            return
+        remote := Trim(req.ResponseText, " `t`r`n" Chr(0xFEFF))
+        if HikariShouldNotifyUpdate(remote, FULL_VER)
+            ShowHikariUpdateNotice(remote)
+    } finally {
+        g_HikariVersionRequest := 0
+    }
+}
+
+ShowHikariUpdateNotice(remote) {
+    global FULL_VER, g_HikariUpdateNotice
+    notice := Gui("", "매크로 업데이트 안내")
+    g_HikariUpdateNotice := notice
+    notice.SetFont("s10", "Malgun Gothic")
+    notice.AddText("w430", "새로운 매크로 버전이 있습니다.")
+    notice.AddText("w430", "현재: " FULL_VER "    최신: " remote)
+    notice.AddText("w430", "최신 버전과 업데이트 안내를 받으려면 디스코드에 가입해 주세요.")
+    notice.AddLink("w430", '<a href="https://discord.gg/KzgDYMAVxw">디스코드 가입하기</a>')
+    notice.AddButton("w100 Default", "닫기").OnEvent("Click", (*) => notice.Destroy())
+    notice.OnEvent("Close", (*) => notice.Destroy())
+    notice.OnEvent("Escape", (*) => notice.Destroy())
+    notice.Show("AutoSize NoActivate")
 }

@@ -165,8 +165,8 @@ CreateFishingMacro() {
 ResolveCastThreshold() {
     global MAIN
     switch MAIN["cast_mode"] {
-        case "short":  return 1.0
-        case "custom": return Max(1.0, Min(100.0, MAIN["cast_power_custom"] + 0.0))
+        case "short":  return 2.0
+        case "custom": return Max(2.0, Min(100.0, MAIN["cast_power_custom"] + 0.0))
         default:       return 96.0
     }
 }
@@ -194,7 +194,7 @@ InitializeCastCycle() {
     Macro.lastActionAt := 0
     Macro.powerBarAddr := 0
     Macro.castThreshold := ResolveCastThreshold()
-    Macro.castWaitTimeoutMs := Max(GetMinCastTimeoutMs(), MAIN["cast_timeout_ms"] + 0)
+    Macro.castWaitTimeoutMs := MAIN["cast_timeout_ms"] + 0
     Macro.fishingEndGraceMs := 100
     Macro.shakingIntervalMs := MAIN["shake_interval_ms"]
     Macro.phase := "CASTING"
@@ -1059,7 +1059,7 @@ EnsureMacroRuntimeDefaults() {
     if (!Macro.HasOwnProp("fishingEndGraceMs") || Macro.fishingEndGraceMs = "" || Macro.fishingEndGraceMs = 0)
         Macro.fishingEndGraceMs := 100
     if (!Macro.HasOwnProp("castWaitTimeoutMs") || Macro.castWaitTimeoutMs = "" || Macro.castWaitTimeoutMs = 0)
-        Macro.castWaitTimeoutMs := Max(GetMinCastTimeoutMs(), MAIN["cast_timeout_ms"] + 0)
+        Macro.castWaitTimeoutMs := MAIN["cast_timeout_ms"] + 0
     if (!Macro.HasOwnProp("shakingIntervalMs") || Macro.shakingIntervalMs = "" || Macro.shakingIntervalMs = 0)
         Macro.shakingIntervalMs := MAIN["shake_interval_ms"]
     if (!Macro.HasOwnProp("castThreshold") || Macro.castThreshold = "" || Macro.castThreshold = 0)
@@ -1372,6 +1372,125 @@ EffectiveFishingActionDelayMs() {
     return MAIN["fishing_action_delay_ms"] + 0
 }
 
+; Diagnostic times describe dispatched LButton commands, not game acknowledgement.
+ReelInputMeasure(next := -1, sample := false) {
+    global Macro
+    static freq := 0, start := 0, last := 0, held := false, downMs := 0.0, upMs := 0.0, events := "", count := 0
+    if (!IsReelDebugEnabled() || !IsReelDebugLogEnabled())
+        return ""
+    if !freq
+        DllCall("QueryPerformanceFrequency", "Int64*", &freq)
+    counter := 0
+    DllCall("QueryPerformanceCounter", "Int64*", &counter)
+    now := counter * 1000.0 / freq
+    if !start {
+        start := now, last := now, held := Macro.isHolding
+    }
+    if held
+        downMs += now-last
+    else
+        upMs += now-last
+    last := now
+    if (next != -1 && next != held) {
+        held := next
+        count += 1
+        ; Bounded buffer; cumulative times and transition count are never truncated.
+        if (StrLen(events) < 4096)
+            events .= (events = "" ? "" : ",") Format("{:.3f}:{}", now-start, held ? "D" : "U")
+    }
+    if !sample
+        return ""
+    result := Format(" inputMs={:.3f} downMs={:.3f} upMs={:.3f} inputHeld={} transitions={} inputEvents={}", now-start, downMs, upMs, held ? 1 : 0, count, events = "" ? "-" : events)
+    events := ""
+    return result
+}
+
+ReelGeometryMeasure(info) {
+    if !info.Has("measureCtx")
+        return " geom=unavailable"
+    try {
+        ctx := info["measureCtx"]
+        track := ReadAbsoluteRect(ctx.bar)
+        bar := ReadAbsoluteRect(ctx.playerbar)
+        fish := ReadAbsoluteRect(ctx.fish)
+        if (track.w <= 0 || bar.w <= 0 || fish.w <= 0 || bar.w > track.w || fish.w > track.w)
+            return " geom=invalid"
+        bc := bar.x + bar.w/2, fc := fish.x + fish.w/2
+        return Format(" geom=ok trackL={:.2f} trackW={:.2f} barL={:.2f} barR={:.2f} barC={:.2f} fishL={:.2f} fishR={:.2f} fishC={:.2f} rectBarN={:.5f} rectFishN={:.5f} rectErr={:+.5f} rectInside={}", track.x, track.w, bar.x, bar.x+bar.w, bc, fish.x, fish.x+fish.w, fc, (bc-track.x)/track.w, (fc-track.x)/track.w, (fc-bc)/track.w, fc >= bar.x && fc <= bar.x+bar.w ? 1 : 0)
+    } catch {
+        return " geom=read_failed"
+    }
+}
+
+ReelClockMs() {
+    static freq := 0
+    if !freq
+        DllCall("QueryPerformanceFrequency", "Int64*", &freq)
+    counter := 0
+    DllCall("QueryPerformanceCounter", "Int64*", &counter)
+    return counter * 1000.0 / freq
+}
+
+; Always enabled: the PWM clock must not depend on diagnostic settings.
+ReelButtonTime(button, next := -1) {
+    global Macro
+    static states := Map()
+    now := ReelClockMs()
+    if !states.Has(button)
+        states[button] := {last: now, down: 0.0, up: 0.0,
+            held: button = "RButton" ? Macro.isHoldingRight : Macro.isHolding}
+    s := states[button]
+    if s.held
+        s.down += now-s.last
+    else
+        s.up += now-s.last
+    s.last := now
+    if (next != -1)
+        s.held := next
+    return {now: now, down: s.down, up: s.up}
+}
+
+; Time-domain pulse-density modulation. Account for actual command duration,
+; including input preparation delays and presses rejected by action-delay gates.
+ReelTimedPwm(controller, duty) {
+    duty := Max(0.0, Min(1.0, duty))
+    t := ReelButtonTime(controller.button)
+    inverted := controller.IsInverted()
+    actual := inverted ? t.up : t.down
+    fresh := !controller.HasOwnProp("pwmTimeState")
+    if fresh
+        controller.pwmTimeState := {at: t.now, actual: actual, duty: duty, debt: 0.0, inverted: inverted}
+    s := controller.pwmTimeState
+    dt := t.now-s.at
+    restart := fresh || dt > 250 || dt < 0 || inverted != s.inverted || duty = 0 || duty = 1
+    if restart
+        s.debt := 0.0
+    else
+        s.debt += s.duty*dt - (actual-s.actual)
+    ; Do not repay stale PWM time after a controller pause or hard command.
+    s.at := t.now, s.actual := actual, s.duty := duty, s.inverted := inverted
+    ; With no elapsed PWM history, choose the nearest requested state.
+    ; A zero time debt must not force a fresh 2% braking command to press.
+    if restart
+        return duty >= 0.5
+    return duty = 1 || (duty > 0 && s.debt >= 0)
+}
+
+ReadReelCenters(ctx) {
+    try {
+        track := ReadAbsoluteRect(ctx.bar)
+        bar := ReadAbsoluteRect(ctx.playerbar)
+        fish := ReadAbsoluteRect(ctx.fish)
+        if (track.w <= 0 || bar.w <= 0 || fish.w <= 0 || bar.w > track.w || fish.w > track.w)
+            return 0
+        return {barAddr: ctx.playerbar, fishAddr: ctx.fish,
+            bar: (bar.x+bar.w/2-track.x)/track.w,
+            fish: (fish.x+fish.w/2-track.x)/track.w, width: bar.w/track.w}
+    } catch {
+        return 0
+    }
+}
+
 HoldMouse() {
     global Macro, Controller
 
@@ -1394,6 +1513,8 @@ HoldMouse() {
     }
 
     Send("{LButton down}")
+    ReelButtonTime("LButton", 1)
+    ReelInputMeasure(1)
     Macro.isHolding := true
     Macro.lastActionAt := A_TickCount
 }
@@ -1409,6 +1530,8 @@ ReleaseMouse(force := false) {
         return
 
     Send("{LButton up}")
+    ReelButtonTime("LButton", 0)
+    ReelInputMeasure(0)
     Macro.isHolding := false
     ; force=true is used by Lullaby pulse correction / resets — do not stamp
     ; lastActionAt or the next PID Hold is blocked for the full action delay
@@ -1431,6 +1554,7 @@ HoldRightMouse() {
         MoveMouseToRobloxClientCenter()
 
     Send("{RButton down}")
+    ReelButtonTime("RButton", 1)
     Macro.isHoldingRight := true
     Macro.lastRightActionAt := A_TickCount
 }
@@ -1446,6 +1570,7 @@ ReleaseRightMouse(force := false) {
         return
 
     Send("{RButton up}")
+    ReelButtonTime("RButton", 0)
     Macro.isHoldingRight := false
     Macro.lastRightActionAt := A_TickCount
 }
@@ -2514,6 +2639,11 @@ PublishReelDebug(info) {
                 lullText, metroInText, rotText, hitText, pulsesText,
                 warnText, fishXText, warnModeText, rodLog
             )
+            if (info.Has("barPos") && IsNumber(info["barPos"]))
+                line := RTrim(line, "`r`n") Format(" barPos={:.4f}`r`n", info["barPos"])
+            if (info.Has("held"))
+                line := RTrim(line, "`r`n") Format(" held={}`r`n", info["held"] ? 1 : 0)
+            line := RTrim(line, "`r`n") ReelInputMeasure(-1, true) ReelGeometryMeasure(info) "`r`n"
             try FileAppend(line, GetReelDebugLogPath(), "UTF-8")
         }
     }
@@ -2521,6 +2651,8 @@ PublishReelDebug(info) {
 
 ReelDebugExtrasFrom(controller) {
     extras := Map()
+    if controller.HasOwnProp("_measureCtx")
+        extras["measureCtx"] := controller._measureCtx
     if (controller is LullabyController) {
         extras["lullMode"] := controller.HasOwnProp("_dbgLullMode") ? controller._dbgLullMode : ""
         extras["metroIn"] := controller.HasOwnProp("_dbgMetroIn") ? controller._dbgMetroIn : ""
@@ -2545,7 +2677,7 @@ MergeReelDebugMap(base, extras) {
 ; Shared reel PID decision for every single-reel controller (and Noiseform's copy).
 ; mode: "hold" | "release" | "pwm"  — pwm uses duty in [0,1].
 ; barWidth: playerbar frame width in the same normalized X space as error
-;           (error = fishCenter - barLeft). Empty/omitted → width-agnostic fallback.
+;           (error = fishCenter - barCenter). Empty/omitted → width-agnostic fallback.
 ; opts: optional Map — zoneTarget=true softens close-range behavior for Noiseform zones
 ;       (synthetic left-edge targets are NOT "fish inside bar").
 ;       barPos / prevBarV enable wall approach clamps + bounce rebound dumps.
@@ -2600,11 +2732,11 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
 
     widthKnown := (barWidth != "" && IsNumber(barWidth) && (barWidth + 0.0) > 0.0005)
     bw := widthKnown ? (barWidth + 0.0) : 0.0
-    ; Left-edge tracking: fish is inside the bar when 0 <= error <= barWidth.
+    ; Both positions are centers in the same track-normalized space.
     ; Zone targets are desired left-edge positions — do not apply this gate.
-    insideMargin := widthKnown ? Max(0.002, bw * 0.08) : 0.0
+    ; Exact center containment; no asymmetric extension past either edge.
     fishInside := zoneTarget ? true : (widthKnown
-        ? (error >= -insideMargin && error <= (bw + insideMargin))
+        ? (Abs(error) <= bw / 2.0)
         : true)
     ; Thin bars overshoot easily on hard outside/depart slams (Cryogenic ~0.13).
     thinBar := !zoneTarget && widthKnown && bw <= 0.16
@@ -2613,10 +2745,10 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
     wideBar := !zoneTarget && widthKnown && bw >= 0.40
     ; Wide comfort = fish safely inside. Keep it for Lullaby lit windows too —
     ; disabling it forced hard left-edge nulling and 05:24 osc (±0.45 in 1s).
-    wideComfort := wideBar && error >= 0.055 && error <= (bw - 0.12)
+    wideComfort := wideBar && Abs(error) <= Max(0.0, bw / 2.0 - 0.12)
     lullabyCalm := lullabyRod && Abs(fishVelocity) < 0.008
     ; Near-edge only: leave comfort so short arcs can still hard catch up.
-    lullabySafe := lullabyRod && wideBar && error >= 0.05 && error <= (bw - 0.10)
+    lullabySafe := lullabyRod && wideBar && Abs(error) <= Max(0.0, bw / 2.0 - 0.10)
 
     absErr := Abs(error)
     absVel := Abs(playerbarVelocity)
@@ -2720,20 +2852,6 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
             bouncedRight := true
         if (bouncedLeft || bouncedRight)
             return DumpBounceVel()
-    }
-
-    ; Narrow physical bars track their CENTER. Incoming error is fish minus
-    ; bar LEFT edge, so zero is an edge and is not a stable capture target.
-    ; One continuous PD output avoids depart/chase/preslow switching near lock.
-    if (thinBar && !lullabyRod) {
-        centerError := error - bw * 0.5
-        relativeVelocity := playerbarVelocity - fishVelocity
-        neutralDuty := MAIN["neutral_duty_cycle"] + 0.0
-        positionTerm := (MAIN["proportional_gain"] + 0.0) * centerError / Max(bw * 0.5, 0.01)
-        dampingTerm := (MAIN["velocity_damping"] + 0.0) * relativeVelocity
-        feedForward := (MAIN["derivative_gain"] + 0.0) * fishVelocity
-        targetDuty := Max(0.0, Min(1.0, neutralDuty + positionTerm - dampingTerm + feedForward))
-        return FinishThin({ mode: "pwm", duty: targetDuty, reason: "center_pd", inside: fishInside })
     }
 
     ; Zone settle: near the lock point, hold neutral instead of twitching.
@@ -2842,7 +2960,7 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
         }
         ; Coasting wrong-way with a real gap → hard reverse toward the fish.
         ; Wide comfort / Lullaby safe: keep soft authority.
-        if (wideBar && fishInside && error >= 0.04 && error <= (bw - 0.08)
+        if (wideBar && fishInside && Abs(error) <= Max(0.0, bw / 2.0 - 0.08)
             && !(lullabyRod && lullabyInWindow && !lullabySafe && !lullabyCalm)) {
             neutralDuty := MAIN["neutral_duty_cycle"] + 0.0
             urgency := Min(1.0, 0.60 + (absVel / 0.022) * 0.28)
@@ -2866,15 +2984,6 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
     ; Noiseform bar is often >0.16 wide, so thin-only dump missed post-zone slides.
     ; Skip while fish is still fleeing with a real gap (11:32 dump at |err|~0.08 stalled chase).
     fishFleeingEarly := Abs(fishVelocity) >= 0.0035 && (error * fishVelocity) > 0
-    ; A fish outside the bar that is pulling away is not a fast arrival.
-    ; Do not let the near-gap emergency brakes reverse a valid pursuit.
-    ; FinishThin still applies wall protection; zone targets keep their tuning.
-    if (!zoneTarget && !fishInside && approachingTarget && fishFleeingEarly
-        && error * (playerbarVelocity - fishVelocity) <= 0) {
-        if (error > 0)
-            return FinishThin({ mode: "hold", duty: 1.0, reason: "outside_flee", inside: false })
-        return FinishThin({ mode: "release", duty: 0.0, reason: "outside_flee", inside: false })
-    }
     ; 18:03/18:07/18:09: residual |barV|~0.02–0.03 at zero → return slip ~0.10–0.14.
     ; Widen kill window and dump hard while still outside on a fast close.
     ; 18:54 Lullaby: skip hard-kill while fish is comfortably inside the wide bar —
@@ -2970,16 +3079,13 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
     if (zoneTarget)
         lookScale += 1.2
 
-    ; Brake for the rate at which the gap closes, not common motion.
-    ; Keep synthetic zone targets on their existing tuning.
-    closingSpeed := zoneTarget ? absVel : Max(0.0, (error >= 0 ? 1 : -1) * (playerbarVelocity - fishVelocity))
-    brakeLookahead := closingSpeed * lookScale
-    needsPreSlow := approachingTarget && closingSpeed > 0
+    brakeLookahead := absVel * lookScale
+    needsPreSlow := approachingTarget
         && (remainingDistance <= preSlowMaxDist)
         && (brakeLookahead >= remainingDistance)
     ; Near-target flutter (09:35): with tiny barV, preslow↔chase toggled every tick.
     ; Micro approaches belong to PID, not brake/chase thrash.
-    if (!zoneTarget && closingSpeed < 0.0045 && absErr < 0.045)
+    if (!zoneTarget && absVel < 0.0045 && absErr < 0.045)
         needsPreSlow := false
 
     ; Fish still running away — do not cut chase into soft brake (11:32: ebrake at
@@ -3025,7 +3131,7 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
         farHard := false
     ; Lullaby wide bar: fish at left-edge err~0.12–0.30 is still inside — far slam
     ; bounced off the wall (18:54 maxE 0.42).
-    if (wideBar && fishInside && error >= 0.04 && error <= (bw - 0.08))
+    if (wideBar && fishInside && Abs(error) <= Max(0.0, bw / 2.0 - 0.08))
         farHard := false
     chaseErrGate := closeThreshold + 0.0
     ; Low-speed micro miss → PID, but not while fish is still walking away at |err|~0.04.
@@ -3091,7 +3197,7 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
                 return FinishThin({ mode: "hold", duty: 1.0, reason: "chase", inside: fishInside })
             return FinishThin({ mode: "release", duty: 0.0, reason: "chase", inside: fishInside })
         }
-        if (wideBar && fishInside && error >= 0.04 && error <= (bw - 0.08)) {
+        if (wideBar && fishInside && Abs(error) <= Max(0.0, bw / 2.0 - 0.08)) {
             neutralDuty := MAIN["neutral_duty_cycle"] + 0.0
             chase := Min(1.0, absErr / Max(bw * 0.45, 0.18))
             soft := 0.45 + (0.40 * chase)
@@ -3139,7 +3245,16 @@ ComputeReelControl(error, playerbarVelocity, fishVelocity, barWidth := "", opts 
         kP *= 0.80
         kV *= 1.30
     }
-    adjustment := (kP * error) + (kD * fishVelocity) - (kV * playerbarVelocity)
+    dampingVelocity := playerbarVelocity
+    if (!zoneTarget && !lullabyRod) {
+        ; Small center misses need useful authority: a 1% track error yields
+        ; at least 8 percentage points of corrective duty, continuously to zero.
+        kP := Max(kP, 8.0)
+        ; Matching the fish's speed is tracking, not overshoot. Dampen closing
+        ; speed instead of opposing all motion in the fish's direction.
+        dampingVelocity := playerbarVelocity - fishVelocity
+    }
+    adjustment := (kP * error) + (kD * fishVelocity) - (kV * dampingVelocity)
     targetDuty := Max(0.0, Min(1.0, neutralDuty + adjustment))
     return FinishThin({ mode: "pwm", duty: targetDuty, reason: "pid", inside: fishInside })
 }
@@ -3155,6 +3270,8 @@ ApplyReelControl(controller, decision) {
         && !controller.inScoringWindow
         && controller.lockedMode != ""
         && GetMetronomeTicker()
+    if ((lullabyDark || decision.mode != "pwm") && controller.HasOwnProp("pwmTimeState"))
+        controller.DeleteProp("pwmTimeState")
     if (lullabyDark) {
         global Macro
         wantHold := (decision.mode = "hold")
@@ -3168,12 +3285,7 @@ ApplyReelControl(controller, decision) {
     } else if (decision.mode = "release") {
         controller.Release()
     } else {
-        if (!controller.HasOwnProp("pwmAccumulator"))
-            controller.pwmAccumulator := 0.0
-
-        controller.pwmAccumulator += decision.duty
-        if (controller.pwmAccumulator >= 1.0) {
-            controller.pwmAccumulator -= 1.0
+        if ReelTimedPwm(controller, decision.duty) {
             controller.Hold()
         } else {
             controller.Release()
@@ -3194,6 +3306,8 @@ ApplyReelControl(controller, decision) {
             "error", controller.HasOwnProp("_dbgError") ? controller._dbgError : 0,
             "barVel", controller.HasOwnProp("_dbgBarVel") ? controller._dbgBarVel : 0,
             "fishVel", controller.HasOwnProp("_dbgFishVel") ? controller._dbgFishVel : 0,
+            "held", controller.button = "RButton" ? Macro.isHoldingRight : Macro.isHolding,
+            "barPos", controller.HasOwnProp("_dbgBarPos") ? controller._dbgBarPos : "",
             "barWidth", controller.HasOwnProp("_dbgBarWidth") ? controller._dbgBarWidth : "",
             "zone", controller.HasOwnProp("_dbgZone") ? controller._dbgZone : 0,
             "inside", inside,
@@ -3203,6 +3317,8 @@ ApplyReelControl(controller, decision) {
 }
 
 PublishReelDebugEdge(controller, mode, reason) {
+    if controller.HasOwnProp("pwmTimeState")
+        controller.DeleteProp("pwmTimeState")
     if !IsReelDebugEnabled()
         return
     PublishReelDebug(MergeReelDebugMap(Map(
@@ -3240,13 +3356,14 @@ class FishingController {
     }
 
     Reset() {
-        for _, propName in ["lastPlayerbarPos", "lastFishPos", "lastPlayerbarVelocity", "recentLeftSlamAt", "recentRightSlamAt", "bounceDumpUntil", "pwmAccumulator"] {
+        for _, propName in ["lastPlayerbarPos", "lastFishPos", "lastPlayerbarVelocity", "recentLeftSlamAt", "recentRightSlamAt", "bounceDumpUntil", "pwmAccumulator", "pwmTimeState", "_reelCenters"] {
             if (this.HasOwnProp(propName))
                 this.DeleteProp(propName)
         }
     }
 
     NoteWallSlam(playerbarPos, playerbarVelocity) {
+        this._dbgBarPos := playerbarPos
         if (playerbarPos < 0.38 && playerbarVelocity <= -0.010)
             this.recentLeftSlamAt := A_TickCount
         if (playerbarPos > 0.62 && playerbarVelocity >= 0.010)
@@ -3278,8 +3395,12 @@ class FishingController {
         fishPos := this.GetFishPosition(ctx)
         playerbarPos := this.GetPlayerbarPosition(ctx)
 
-        if (fishPos = "" || playerbarPos = "")
+        if (fishPos = "" || playerbarPos = "") {
+            this.Release()
+            if this.HasOwnProp("pwmTimeState")
+                this.DeleteProp("pwmTimeState")
             return
+        }
 
         if (!this.HasOwnProp("lastPlayerbarPos"))
             this.lastPlayerbarPos := playerbarPos
@@ -3316,7 +3437,7 @@ class FishingController {
         barWidth := ""
         try {
             if (ctx && ctx.playerbar)
-                barWidth := ReadFrameSize(ctx.playerbar).X
+                barWidth := this._reelCenters ? this._reelCenters.width : ""
         } catch {
             barWidth := ""
         }
@@ -3334,9 +3455,8 @@ class FishingController {
         if (!ctx || !ctx.fish)
             return ""
 
-        fishPos := ReadFramePosition(ctx.fish)
-        fishSize := ReadFrameSize(ctx.fish)
-        return fishPos.X + (fishSize.X / 2)
+        this._reelCenters := ReadReelCenters(ctx)
+        return this._reelCenters ? this._reelCenters.fish : ""
     }
 
     GetPlayerbarPosition(ctx := "") {
@@ -3345,8 +3465,12 @@ class FishingController {
         if (!ctx || !ctx.playerbar)
             return ""
 
-        playerbarPos := ReadFramePosition(ctx.playerbar)
-        return playerbarPos.X
+        this._measureCtx := ctx
+        ReelInputMeasure()
+        if (!this.HasOwnProp("_reelCenters") || !this._reelCenters
+            || this._reelCenters.barAddr != ctx.playerbar || this._reelCenters.fishAddr != ctx.fish)
+            this._reelCenters := ReadReelCenters(ctx)
+        return this._reelCenters ? this._reelCenters.bar : ""
     }
 
 	; now checks in StartMacroCycle if rod matches text, should prevent constant checking
@@ -3841,8 +3965,12 @@ class NoiseformController extends FishingController {
             return
         }
 
-        if (fishPos = "" || playerbarPos = "")
+        if (fishPos = "" || playerbarPos = "") {
+            this.Release()
+            if this.HasOwnProp("pwmTimeState")
+                this.DeleteProp("pwmTimeState")
             return
+        }
 
         if (!this.HasOwnProp("lastPlayerbarPos"))
             this.lastPlayerbarPos := playerbarPos
@@ -3897,7 +4025,7 @@ class NoiseformController extends FishingController {
         barWidth := ""
         try {
             if (ctx && ctx.playerbar)
-                barWidth := ReadFrameSize(ctx.playerbar).X
+                barWidth := this._reelCenters ? this._reelCenters.width : ""
         } catch {
             barWidth := ""
         }
@@ -3944,75 +4072,42 @@ IsHalibutIgnoredReelChild(name) {
 ; Rejects ghost containers (visible-but-empty ImageId or zero AbsoluteSize)
 ; and anything vertically far from the reel bar center.
 GetHalibutWarningRect(barAddr := 0) {
-    global OFFSETS
-
-    if (!barAddr) {
+    if !barAddr {
         ctx := GetReelBarContext()
         if (!ctx || !ctx.bar)
             return ""
         barAddr := ctx.bar
     }
-    if (!OFFSETS.Has("AbsolutePosition") || !OFFSETS.Has("AbsoluteSize"))
-        return ""
-
-    warnAddr := FindChildByName(barAddr, "warningContainer")
-    if (!warnAddr)
-        warnAddr := FindChildByName(barAddr, "warning")
-    if (!warnAddr)
-        return ""
-
     try {
-        if (!ReadGuiObjectVisible(warnAddr))
+        container := FindChildByName(barAddr, "warningContainer")
+        icon := container ? FindChildByName(container, "warning") : FindChildByName(barAddr, "warning")
+        if (!icon || !ReadGuiObjectVisible(icon))
             return ""
+        if (container && !ReadGuiObjectVisible(container))
+            return ""
+        if (NormalizeNoiseformImageId(ReadGuiImage(icon)) = "")
+            return ""
+        track := ReadAbsoluteRect(barAddr)
+        rect := ReadAbsoluteRect(icon)
+        ; Use the measured container if the icon is momentarily zero-sized.
+        ; Do not fabricate a pixel width: that shifts the warning's center.
+        if ((rect.w <= 0 || rect.h <= 0) && container)
+            rect := ReadAbsoluteRect(container)
+        if (track.w <= 1 || rect.w <= 0 || rect.h <= 0
+            || rect.w > track.w || rect.h > track.w)
+            return ""
+        center := rect.x+rect.w/2.0
+        if (center < track.x || center > track.x+track.w)
+            return ""
+        ; Scale the vertical neighborhood with reel dimensions, not screen pixels.
+        if (Abs(rect.y+rect.h/2.0-track.y-track.h/2.0) > Max(track.h*3.5, track.w*0.10))
+            return ""
+        return rect
     } catch {
         return ""
     }
-
-    ; The inner "warning" ImageLabel holds the actual ! image.
-    inner := FindChildByName(warnAddr, "warning")
-    if (inner) {
-        try {
-            if (ReadGuiObjectVisible(inner))
-                warnAddr := inner
-        } catch {
-        }
-    }
-
-    ; Active bang exposes an ImageId (dump: 94863710580981). Empty = idle ghost.
-    if (OFFSETS.Has("GuiImage")) {
-        try {
-            if (NormalizeNoiseformImageId(ReadGuiImage(warnAddr)) = "")
-                return ""
-        } catch {
-        }
-    }
-
-    barRect := ReadAbsoluteRect(barAddr)
-    warnRect := ReadAbsoluteRect(warnAddr)
-    if (!IsObject(barRect) || !IsObject(warnRect))
-        return ""
-    ; Some clients report a tiny/zero AbsoluteSize on the bang ImageLabel while
-    ; position is valid — synthesize a minimum hitbox so Halibut still tracks !.
-    if (warnRect.w < 16.0 || warnRect.h < 16.0) {
-        if (warnRect.x = 0.0 && warnRect.y = 0.0)
-            return ""
-        warnRect := {
-            x: warnRect.x,
-            y: warnRect.y,
-            w: Max(warnRect.w, 24.0),
-            h: Max(warnRect.h, 24.0)
-        }
-    }
-    if (barRect.w <= 1.0)
-        return ""
-
-    ; Bang always sits close to the bar vertically (dump: ~62px above center).
-    maxDy := Max(72.0, barRect.h * 3.5)
-    if (Abs((warnRect.y + warnRect.h / 2.0) - (barRect.y + barRect.h / 2.0)) > maxDy)
-        return ""
-
-    return warnRect
 }
+
 
 ; Bar-relative center X in 0..1 for the active ! (used by Hunt.ahk dump probe).
 GetHalibutWarningCenter(barAddr := 0) {
@@ -4031,116 +4126,85 @@ GetHalibutWarningCenter(barAddr := 0) {
     return ((r.x + r.w / 2.0) - barRect.x) / barRect.w
 }
 
-; PinionController-style: only override GetFishPosition and feed the base PID
-; a "virtual fish" that biases tracking toward the ! warning while keeping the
-; fish inside the playerbar. Base PID handles all preslow/ebrake/chase damping.
-;
-; Halibut is stricter than Pinion: the ! must sit definitively inside the bar
-; (not touching the edge), AND the fish must never leave. We use a midpoint
-; strategy so both centers share the same margin from their respective bar
-; edges — bar center at (fish + warn) / 2 gives each side `halfWidth − dist/2`
-; of headroom. When the two are too far apart to cover both with margin, we
-; fall back to protecting the fish (its `!` is a teleport preview — sitting
-; on the fish also means we're already positioned for the snap).
-class HalibutHarpoonController extends FishingController {
-    ; Minimum margin each of fish/warn needs from the corresponding bar edge
-    ; (Frame 0..1 units). ~0.035 ≈ 17.5% of a halfWidth of 0.20.
-    static COVER_MIN_MARGIN := 0.035
-    ; When the midpoint isn't feasible we push the fish this far inside the
-    ; near edge, then shift the bar to bring the warn as far in as possible.
-    static FISH_SAFE_MARGIN := 0.045
+; Return a feasible bar-center interval in track-normalized coordinates.
+PlanHalibutTarget(fishX, fishHalf, warnX, warnHalf, barWidth) {
+    half := Min(0.5, barWidth/2.0)
+    if (half <= 0 || fishHalf < 0)
+        return {target: fishX, mode: "invalid"}
+    inset := Min(half*0.08, Max(0.0, half-fishHalf)/2.0)
+    fishLo := Max(half, fishX+fishHalf-half+inset)
+    fishHi := Min(1-half, fishX-fishHalf+half-inset)
+    if (fishLo > fishHi)
+        return {target: Max(half, Min(1-half, fishX)), mode: "fish_edge"}
+    if (warnX = "")
+        return {target: Max(fishLo, Min(fishHi, fishX)), mode: "none"}
+    bothLo := Max(fishLo, warnX+warnHalf-half+inset)
+    bothHi := Min(fishHi, warnX-warnHalf+half-inset)
+    if (bothLo <= bothHi)
+        return {target: (bothLo+bothHi)/2.0, mode: "cover"}
+    ; The warning cannot fit: approach it only as far as fish containment allows.
+    return {target: Max(fishLo, Min(fishHi, warnX)), mode: "fish_priority"}
+}
 
+class HalibutHarpoonController extends FishingController {
     warnActive := false
     _dbgWarnX := ""
     _dbgFishX := ""
-    _dbgWarnMode := ""
+    _dbgWarnMode := "none"
 
     Reset() {
         super.Reset()
         this.warnActive := false
-        this._dbgWarnX := ""
-        this._dbgFishX := ""
-        this._dbgWarnMode := ""
-    }
-
-    ; Midpoint-first strategy.
-    ;   distance = |warn − fish|
-    ;   midpointMax = fullWidth − 2*coverMargin   (both sides get coverMargin)
-    ;   asymMax     = fullWidth − fishSafeMargin  (fish protected, warn barely in)
-    ; Regions:
-    ;   distance ≤ midpointMax       → bar center = (fish + warn) / 2  (mode=mid)
-    ;   midpointMax < d ≤ asymMax    → bar center pushes toward warn while
-    ;                                    keeping fish inset by fishSafeMargin
-    ;                                    from its near edge         (mode=asym)
-    ;   distance > asymMax           → bar center = fish            (mode=fish)
-    ;
-    ; Base PID equilibrium is `playerbar_center = virtual_fish`, so returning
-    ; the desired bar-center target does the right thing.
-    GetBothTargets(fishX, warnX, halfWidth) {
-        distance := Abs(warnX - fishX)
-        fullWidth := halfWidth * 2.0
-        coverMargin := HalibutHarpoonController.COVER_MIN_MARGIN
-        fishSafeMargin := HalibutHarpoonController.FISH_SAFE_MARGIN
-
-        if (halfWidth <= coverMargin + 0.005) {
-            this._dbgWarnMode := "thin"
-            return fishX
+        this._dbgWarnX := "", this._dbgFishX := "", this._dbgWarnMode := "none"
+        for prop in ["_halibutFish", "_halibutTarget", "_halibutMode"] {
+            if this.HasOwnProp(prop)
+                this.DeleteProp(prop)
         }
-
-        midpointMax := fullWidth - 2.0 * coverMargin
-        if (midpointMax < 0)
-            midpointMax := 0
-        asymMax := fullWidth - fishSafeMargin
-        if (asymMax < midpointMax)
-            asymMax := midpointMax
-
-        if (distance <= midpointMax) {
-            this._dbgWarnMode := "mid"
-            return (fishX + warnX) / 2.0
-        }
-
-        if (distance <= asymMax) {
-            this._dbgWarnMode := "asym"
-            return warnX > fishX
-                ? fishX + halfWidth - fishSafeMargin
-                : fishX - halfWidth + fishSafeMargin
-        }
-
-        this._dbgWarnMode := "fish"
-        return fishX
     }
 
     GetFishPosition(ctx := "") {
         if (ctx = "")
             ctx := GetReelBarContext()
-
         fishX := super.GetFishPosition(ctx)
         this.warnActive := false
-        this._dbgFishX := (fishX != "" && IsNumber(fishX)) ? fishX : ""
-        this._dbgWarnX := ""
-        this._dbgWarnMode := ""
-
-        if (!ctx || !ctx.playerbar || !ctx.bar)
-            return fishX
-
-        warnX := GetHalibutWarningCenter(ctx.bar)
-        if (warnX = "" || !IsNumber(warnX)) {
-            this._dbgWarnMode := "none"
-            return fishX
+        this._dbgFishX := fishX, this._dbgWarnX := ""
+        if (fishX = "" || !this._reelCenters) {
+            this._dbgWarnMode := "invalid"
+            return ""
         }
-        this.warnActive := true
-        this._dbgWarnX := warnX
-
-        playerbarSize := ReadFrameSize(ctx.playerbar)
-        halfWidth := playerbarSize.X / 2
-        if (halfWidth <= 0.0) {
-            this._dbgWarnMode := "nobar"
-            return fishX
+        try {
+            track := ReadAbsoluteRect(ctx.bar)
+            fishRect := ReadAbsoluteRect(ctx.fish)
+            if (track.w <= 0 || fishRect.w <= 0)
+                throw Error("Invalid reel rectangle")
+            warn := GetHalibutWarningRect(ctx.bar)
+            warnX := "", warnHalf := 0.0
+            if IsObject(warn) {
+                warnX := (warn.x+warn.w/2.0-track.x)/track.w
+                warnHalf := warn.w/track.w/2.0
+                this.warnActive := true
+                this._dbgWarnX := warnX
+            }
+            plan := PlanHalibutTarget(fishX, fishRect.w/track.w/2.0,
+                warnX, warnHalf, this._reelCenters.width)
+        } catch {
+            plan := {target: fishX, mode: "read_failed"}
         }
-
-        return this.GetBothTargets(fishX, warnX, halfWidth)
+        this._dbgWarnMode := plan.mode
+        ; The shared controller may target a virtual center, but its fish velocity
+        ; must come from the real fish, never from warning appearance/disappearance.
+        fishDelta := this.HasOwnProp("_halibutFish") ? fishX-this._halibutFish : 0.0
+        this.lastFishPos := plan.target-fishDelta
+        this._halibutFish := fishX
+        if (this.HasOwnProp("_halibutMode") && this._halibutMode != plan.mode
+            && this.HasOwnProp("pwmTimeState"))
+            this.DeleteProp("pwmTimeState")
+        this._halibutMode := plan.mode
+        this._halibutTarget := plan.target
+        return plan.target
     }
 }
+
 
 ; ── Stellarwave Melody file log ────────────────────────────────────────────
 global STELLARWAVE_LOG_PATH := ""
@@ -4657,6 +4721,7 @@ _TryClickStellarwaveNextSignInner(controller, ctx := "") {
 
     if (Macro.isHolding) {
         Send("{LButton up}")
+    ReelButtonTime("LButton", 0)
         Macro.isHolding := false
     }
 
@@ -4982,6 +5047,7 @@ class StellarwaveController extends FishingController {
             }
             if (Macro.isHolding) {
                 Send("{LButton up}")
+    ReelButtonTime("LButton", 0)
                 Macro.isHolding := false
             }
             TryClickStellarwaveNextSign(this, ctx)
@@ -5748,15 +5814,18 @@ class LullabyController extends FishingController {
         wasHolding := Macro.isHolding && IsLullabyFishingEnabled()
         if (Macro.isHolding) {
             Send("{LButton up}")
+    ReelButtonTime("LButton", 0)
             Macro.isHolding := false
         }
         Send("{LButton down}")
+    ReelButtonTime("LButton", 1)
         Macro.isHolding := true
         this.lastPulseAt := A_TickCount
         if (wasHolding)
             return
         Sleep(24)
         Send("{LButton up}")
+    ReelButtonTime("LButton", 0)
         Macro.isHolding := false
     }
 

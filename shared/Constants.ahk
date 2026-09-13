@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OpenMacro XTernal
 ;  SPDX-License-Identifier: AGPL-3.0-only
 ;  SPDX-FileCopyrightText: (c) 2026 OpenMacro XTernal (@anorexc)
@@ -453,10 +453,6 @@ GetObsoleteMainSettings() {
     ]
 }
 
-GetMinCastTimeoutMs() {
-    return 5000
-}
-
 PruneObsoleteMainSettings(mainSettings) {
     changed := false
 
@@ -474,7 +470,7 @@ NormalizeMainSettings(mainSettings) {
     changed := false
 
     if (mainSettings.Has("cast_timeout_ms") && IsNumber(mainSettings["cast_timeout_ms"])) {
-        normalized := Max(GetMinCastTimeoutMs(), Round(mainSettings["cast_timeout_ms"] + 0))
+        normalized := Max(0, Round(mainSettings["cast_timeout_ms"] + 0))
         if (normalized != mainSettings["cast_timeout_ms"]) {
             mainSettings["cast_timeout_ms"] := normalized
             changed := true

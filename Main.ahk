@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OpenMacro XTernal
 ;  SPDX-License-Identifier: AGPL-3.0-only
 ;  SPDX-FileCopyrightText: (c) 2026 OpenMacro XTernal (@anorexc)
@@ -71,6 +71,7 @@ StartApp() {
     }
 
     GetGui()
+    SetTimer(StartHikariVersionCheck, -100)
 }
 
 Initialize() {

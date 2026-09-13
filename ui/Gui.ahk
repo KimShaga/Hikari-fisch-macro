@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OpenMacro XTernal
 ;  SPDX-License-Identifier: AGPL-3.0-only
 ;  SPDX-FileCopyrightText: (c) 2026 OpenMacro XTernal (@anorexc)
@@ -132,7 +132,7 @@ GetGui() {
     CastTimeout := FishingSettingsGui.AddEdit("x305 y96 w110 h20")
     CastTimeoutHelp := FishingSettingsGui.AddText("x210 y96 w50 h20 c" Accent, "설명")
     CastTimeoutHelp.SetFont("underline")
-    CastTimeoutHelp.OnEvent("Click", (*) => InfoPopup.Show("캐스트 타임아웃", "캐스트 시도를 포기하기까지 기다리는 시간입니다. 최소 5초입니다. 캐스트 바 대기와 해제 후 낚시 UI 대기에도 쓰입니다. 타임아웃 시 '타임아웃 시 재캐스트' 설정에 따라 재시도하거나 멈춥니다."))
+    CastTimeoutHelp.OnEvent("Click", (*) => InfoPopup.Show("캐스트 타임아웃", "캐스트 시도를 포기하기까지 기다리는 시간입니다. 0초 이상이며 소수점 단위로 설정할 수 있습니다. 캐스트 바 대기와 해제 후 낚시 UI 대기에도 쓰입니다. 타임아웃 시 '타임아웃 시 재캐스트' 설정에 따라 재시도하거나 멈춥니다."))
 
     FishingSettingsGui.AddText("x20 y119 w150 h20 c" TextColor, "사이클 시작 딜레이").SetFont("s10")
     PreCastDelay := FishingSettingsGui.AddEdit("x305 y119 w110 h20")
@@ -1262,7 +1262,7 @@ GetGui() {
                 if (showPopup)
                     InfoPopup.Show("퍼펙트 캐스트 주의", "피쉬에는 캐스트 파워가 11%를 넘으면 캐스트마다 캐릭터가 조금씩 움직이는 버그가 있어, 퍼펙트 캐스트로 오래 돌리면 물에 빠질 수 있습니다.")
             case "숏":
-                CastPowerThreshold.Value := "1%"
+                CastPowerThreshold.Value := "2%"
                 CastPowerThreshold.Enabled := false
             case "사용자 지정":
                 CastPowerThreshold.Value := MAIN["cast_power_custom"] "%"
@@ -1302,7 +1302,7 @@ GetGui() {
         if (CastMode.Text = "사용자 지정") {
             raw := RegExReplace(CastPowerThreshold.Value, "%")
             if (IsNumber(raw)) {
-                v := Max(1.0, Min(100.0, raw + 0.0))
+                v := Max(2.0, Min(100.0, raw + 0.0))
                 MAIN["cast_power_custom"] := v
                 SETTINGS["main"]["cast_power_custom"] := v
             }
@@ -1310,7 +1310,7 @@ GetGui() {
 
         raw := Trim(CastTimeout.Value)
         if (IsNumber(raw) && raw + 0 >= 0) {
-            v := Max(GetMinCastTimeoutMs(), Round(raw * 1000))
+            v := Round(raw * 1000)
             MAIN["cast_timeout_ms"] := v
             SETTINGS["main"]["cast_timeout_ms"] := v
         }
